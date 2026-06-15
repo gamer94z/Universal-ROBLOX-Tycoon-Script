@@ -1,10 +1,10 @@
 return function()
 	local PRICE_NAMES = {
-		Cost = true,
-		Price = true,
-		Amount = true,
-		Cash = true,
-		Money = true,
+		cost = true,
+		price = true,
+		amount = true,
+		cash = true,
+		money = true,
 	}
 	local PAID_PURCHASE_WORDS = {
 		"robux",
@@ -14,8 +14,16 @@ return function()
 		"dev product",
 		"productid",
 		"product id",
+		"developerproductid",
+		"developer product id",
 		"gamepassid",
 		"game pass id",
+		"passid",
+		"pass id",
+		"assetid",
+		"asset id",
+		"robuxprice",
+		"robux price",
 		"premium",
 		"r$",
 		" r$",
@@ -52,6 +60,7 @@ return function()
 		"skip",
 		"pass",
 		"product",
+		"paid",
 	}
 	local MACHINE_ANCESTOR_WORDS = {
 		"purchasedobjects",
@@ -142,10 +151,20 @@ return function()
 		return nil
 	end
 
+	local function isPriceName(name)
+		local clean = lower(name):gsub("%s+", ""):gsub("_", "")
+		return PRICE_NAMES[clean]
+			or clean:find("cost", 1, true) ~= nil
+			or clean:find("price", 1, true) ~= nil
+	end
+
 	local function extractPrice(object)
 		for _, descendant in ipairs(object:GetDescendants()) do
-			if PRICE_NAMES[descendant.Name] and (descendant:IsA("IntValue") or descendant:IsA("NumberValue")) then
-				return tonumber(descendant.Value)
+			if isPriceName(descendant.Name) and (descendant:IsA("IntValue") or descendant:IsA("NumberValue") or descendant:IsA("StringValue")) then
+				local value = tonumber(descendant.Value) or findNumberInName(descendant.Value)
+				if value then
+					return value
+				end
 			end
 			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
 				local text = descendant.Text
@@ -155,16 +174,22 @@ return function()
 				end
 			end
 		end
-		return findNumberInName(object.Name)
+		return nil
 	end
 
 	local function hasExplicitPrice(object)
+		for _, child in ipairs(object:GetChildren()) do
+			if isPriceName(child.Name) then
+				return true
+			end
+		end
+
 		if object:FindFirstChild("Cost") or object:FindFirstChild("Price") then
 			return true
 		end
 
 		for _, descendant in ipairs(object:GetDescendants()) do
-			if PRICE_NAMES[descendant.Name] and (descendant:IsA("IntValue") or descendant:IsA("NumberValue")) then
+			if isPriceName(descendant.Name) and (descendant:IsA("IntValue") or descendant:IsA("NumberValue") or descendant:IsA("StringValue")) then
 				return true
 			end
 			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
@@ -174,17 +199,35 @@ return function()
 			end
 		end
 
-		return findNumberInName(object.Name) ~= nil
+		return false
+	end
+
+	local function partHasTouchInterest(part)
+		if not part then
+			return false
+		end
+		for _, child in ipairs(part:GetChildren()) do
+			if child:IsA("TouchTransmitter") then
+				return true
+			end
+		end
+		return false
 	end
 
 	local function getTouchPart(object)
 		if object:IsA("BasePart") then
 			return object
 		end
-		if object:IsA("Model") then
-			if object.PrimaryPart then
-				return object.PrimaryPart
+		if object:IsA("Model") and object.PrimaryPart and partHasTouchInterest(object.PrimaryPart) then
+			return object.PrimaryPart
+		end
+		for _, descendant in ipairs(object:GetDescendants()) do
+			if descendant:IsA("BasePart") and partHasTouchInterest(descendant) then
+				return descendant
 			end
+		end
+		if object:IsA("Model") and object.PrimaryPart then
+			return object.PrimaryPart
 		end
 		for _, descendant in ipairs(object:GetDescendants()) do
 			if descendant:IsA("BasePart") then
@@ -196,15 +239,7 @@ return function()
 
 	local function hasTouchInterest(object)
 		local part = getTouchPart(object)
-		if not part then
-			return false
-		end
-		for _, child in ipairs(part:GetChildren()) do
-			if child:IsA("TouchTransmitter") then
-				return true
-			end
-		end
-		return false
+		return partHasTouchInterest(part)
 	end
 
 	local function getPrompt(object)
@@ -316,7 +351,7 @@ return function()
 			local inMachineContainer = hasAncestorNamed(descendant, root, MACHINE_ANCESTOR_WORDS)
 			local explicitPrice = hasExplicitPrice(descendant)
 			local isPurchaseNamed = hasAny(name, { "button", "buy", "purchase" })
-			local isButton = (isPurchaseNamed or explicitPrice) and (inPurchaseContainer or isPurchaseNamed) and not inMachineContainer
+			local isButton = inPurchaseContainer and (isPurchaseNamed or explicitPrice) and explicitPrice and not inMachineContainer
 			local isDrop = not isButton and hasAny(name, { "drop", "cash", "money", "collect", "collector" })
 
 			if isButton and hasTouchInterest(descendant) and #data.buttons < context.CONFIG.maxButtons then
