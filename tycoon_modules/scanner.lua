@@ -40,6 +40,7 @@ return function()
 		"video",
 		"sponsor",
 		"reward",
+		"free",
 		"free cash",
 		"free money",
 		"free coins",
@@ -55,6 +56,14 @@ return function()
 		"twitter",
 		"boost",
 		"vip",
+		"claim",
+		"gift",
+		"spin",
+		"luck",
+		"limited",
+		"exclusive",
+		"starterpack",
+		"starter pack",
 		"shop",
 		"store",
 		"skip",
@@ -80,6 +89,8 @@ return function()
 		"buybuttons",
 		"purchasebuttons",
 		"pads",
+		"purchasepads",
+		"buyitems",
 		"buy pads",
 	}
 
@@ -158,6 +169,18 @@ return function()
 			or clean:find("price", 1, true) ~= nil
 	end
 
+	local function hasCashPriceText(text)
+		local value = findNumberInName(text)
+		if not value then
+			return false
+		end
+		local textLower = lower(text)
+		return textLower:find("%$", 1, false) ~= nil
+			or textLower:find("cash", 1, true) ~= nil
+			or textLower:find("money", 1, true) ~= nil
+			or textLower:find("coin", 1, true) ~= nil
+	end
+
 	local function extractPrice(object)
 		for _, descendant in ipairs(object:GetDescendants()) do
 			if isPriceName(descendant.Name) and (descendant:IsA("IntValue") or descendant:IsA("NumberValue") or descendant:IsA("StringValue")) then
@@ -168,7 +191,7 @@ return function()
 			end
 			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
 				local text = descendant.Text
-				local value = text and findNumberInName(text)
+				local value = text and hasCashPriceText(text) and findNumberInName(text)
 				if value then
 					return value
 				end
@@ -184,16 +207,12 @@ return function()
 			end
 		end
 
-		if object:FindFirstChild("Cost") or object:FindFirstChild("Price") then
-			return true
-		end
-
 		for _, descendant in ipairs(object:GetDescendants()) do
 			if isPriceName(descendant.Name) and (descendant:IsA("IntValue") or descendant:IsA("NumberValue") or descendant:IsA("StringValue")) then
 				return true
 			end
 			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-				if findNumberInName(descendant.Text) then
+				if hasCashPriceText(descendant.Text) then
 					return true
 				end
 			end
@@ -258,6 +277,20 @@ return function()
 
 	local function hasCollectorActivation(object)
 		return hasTouchInterest(object) or getPrompt(object) ~= nil or getClickDetector(object) ~= nil
+	end
+
+	local function isPurchaseContainer(object)
+		return object and hasAny(object.Name, PURCHASE_CONTAINER_WORDS)
+	end
+
+	local function getPurchaseContainers(root)
+		local containers = {}
+		for _, descendant in ipairs(root:GetDescendants()) do
+			if (descendant:IsA("Folder") or descendant:IsA("Model")) and isPurchaseContainer(descendant) then
+				table.insert(containers, descendant)
+			end
+		end
+		return containers
 	end
 
 	local function getModelScore(model)
@@ -345,48 +378,63 @@ return function()
 
 	local function collectCandidates(root, data, context)
 		local cash = getCash(context)
-		for _, descendant in ipairs(root:GetDescendants()) do
-			local name = lower(descendant.Name)
-			local inPurchaseContainer = hasAncestorNamed(descendant, root, PURCHASE_CONTAINER_WORDS)
-			local inMachineContainer = hasAncestorNamed(descendant, root, MACHINE_ANCESTOR_WORDS)
-			local explicitPrice = hasExplicitPrice(descendant)
-			local isPurchaseNamed = hasAny(name, { "button", "buy", "purchase" })
-			local isButton = inPurchaseContainer and (isPurchaseNamed or explicitPrice) and explicitPrice and not inMachineContainer
-			local isDrop = not isButton and hasAny(name, { "drop", "cash", "money", "collect", "collector" })
+		local seenButtonObjects = {}
 
-			if isButton and hasTouchInterest(descendant) and #data.buttons < context.CONFIG.maxButtons then
-				if isBlockedInteraction(descendant) then
-					data.paidSkipped = data.paidSkipped + 1
-				else
-					local price = extractPrice(descendant)
-					if price and price > 0 then
-						table.insert(data.buttons, {
-							object = descendant,
-							part = getTouchPart(descendant),
-							price = price,
-							affordable = price <= cash,
-							locked = price > cash,
-							paidPurchase = false,
-							ownerMatch = data.ownerMatch,
-							ownerVerified = data.ownerVerified,
-							root = data.root,
-							name = descendant.Name,
-						})
-					else
-						data.paidSkipped = data.paidSkipped + 1
+		for _, container in ipairs(getPurchaseContainers(root)) do
+			for _, candidate in ipairs(container:GetChildren()) do
+				if #data.buttons >= context.CONFIG.maxButtons then
+					break
+				end
+				if not seenButtonObjects[candidate] then
+					seenButtonObjects[candidate] = true
+
+					local explicitPrice = hasExplicitPrice(candidate)
+					if explicitPrice and hasTouchInterest(candidate) and not hasAncestorNamed(candidate, root, { "purchasedobjects", "purchased" }) then
+						if isBlockedInteraction(candidate) then
+							data.paidSkipped = data.paidSkipped + 1
+						else
+							local price = extractPrice(candidate)
+							if price and price > 0 then
+								table.insert(data.buttons, {
+									object = candidate,
+									part = getTouchPart(candidate),
+									price = price,
+									affordable = price <= cash,
+									locked = price > cash,
+									paidPurchase = false,
+									ownerMatch = data.ownerMatch,
+									ownerVerified = data.ownerVerified,
+									root = data.root,
+									name = candidate.Name,
+								})
+							else
+								data.paidSkipped = data.paidSkipped + 1
+							end
+						end
 					end
 				end
-			elseif isDrop and not isBlockedInteraction(descendant) and hasCollectorActivation(descendant) and #data.drops < context.CONFIG.maxDrops then
-				table.insert(data.drops, {
-					object = descendant,
-					part = getTouchPart(descendant),
-					prompt = getPrompt(descendant),
-					clickDetector = getClickDetector(descendant),
-					ownerMatch = data.ownerMatch,
-					ownerVerified = data.ownerVerified,
-					root = data.root,
-					name = descendant.Name,
-				})
+			end
+		end
+
+		for _, descendant in ipairs(root:GetDescendants()) do
+			local name = lower(descendant.Name)
+			local isDrop = hasAny(name, { "drop", "cash", "money", "collect", "collector" })
+
+			if not isPurchaseContainer(descendant) and isDrop and not isBlockedInteraction(descendant) and hasCollectorActivation(descendant) and #data.drops < context.CONFIG.maxDrops then
+				if hasAncestorNamed(descendant, root, PURCHASE_CONTAINER_WORDS) then
+					data.paidSkipped = data.paidSkipped + 1
+				else
+					table.insert(data.drops, {
+						object = descendant,
+						part = getTouchPart(descendant),
+						prompt = getPrompt(descendant),
+						clickDetector = getClickDetector(descendant),
+						ownerMatch = data.ownerMatch,
+						ownerVerified = data.ownerVerified,
+						root = data.root,
+						name = descendant.Name,
+					})
+				end
 			end
 		end
 	end
