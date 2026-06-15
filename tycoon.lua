@@ -125,7 +125,10 @@ local function requireTycoonModule(moduleName)
 
 	local ok, result = pcall(function()
 		local chunk = loadstring(source)
-		return chunk and chunk()
+		if not chunk then
+			return nil
+		end
+		return chunk()
 	end)
 	if not ok then
 		warn("[0xVyrs Tycoon] Module compile failed: " .. tostring(moduleName) .. " | " .. tostring(result))
@@ -194,6 +197,15 @@ local function initModule(factory, moduleContext)
 	return factory
 end
 
+local function runSafe(taskName, callback, ...)
+	local ok, result = pcall(callback, ...)
+	if not ok then
+		warn("[0xVyrs Tycoon] " .. tostring(taskName) .. " failed: " .. tostring(result))
+		return nil
+	end
+	return result
+end
+
 loadSettings()
 
 local oldGui = CoreGui:FindFirstChild("TycoonCoreGUI")
@@ -216,8 +228,26 @@ scanner = initModule(scanner, context)
 collector = initModule(collector, context)
 upgrades = initModule(upgrades, context)
 
-local ui = uiFactory(context)
-local stats = statsFactory(context)
+local ui = runSafe("ui init", uiFactory, context)
+local stats = runSafe("stats init", statsFactory, context)
+if type(scanner) ~= "table" or type(collector) ~= "table" or type(upgrades) ~= "table" or type(ui) ~= "table" or type(stats) ~= "table" then
+	error("[0xVyrs Tycoon] Module init failed")
+end
+
+if type(scanner.scan) ~= "function"
+	or type(collector.collectNearby) ~= "function"
+	or type(upgrades.getNearestAffordable) ~= "function"
+	or type(upgrades.getCheapestAffordable) ~= "function"
+	or type(upgrades.render) ~= "function"
+	or type(upgrades.clear) ~= "function"
+	or type(upgrades.updateWaypoint) ~= "function"
+	or type(upgrades.hideWaypoint) ~= "function"
+	or type(ui.update) ~= "function"
+	or type(ui.onToggle) ~= "function"
+	or type(stats.update) ~= "function"
+	or type(stats.get) ~= "function" then
+	error("[0xVyrs Tycoon] Module contract failed")
+end
 local runtime = {
 	lastScan = 0,
 	lastCollect = 0,
@@ -261,50 +291,55 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		return
 	end
 
-	stats.update(deltaTime)
+	runSafe("stats update", stats.update, deltaTime)
 	local now = os.clock()
 
 	if now - runtime.lastScan >= CONFIG.scanInterval then
 		runtime.lastScan = now
-		runtime.data = scanner.scan(context)
-		runtime.nearest = upgrades.getNearestAffordable(runtime.data, getLocalRoot())
-		runtime.cheapest = upgrades.getCheapestAffordable(runtime.data)
+		runtime.data = runSafe("scan", scanner.scan, context) or runtime.data
+		runtime.nearest = runSafe("nearest upgrade", upgrades.getNearestAffordable, runtime.data, getLocalRoot())
+		runtime.cheapest = runSafe("cheapest upgrade", upgrades.getCheapestAffordable, runtime.data)
 	end
 
 	if CONFIG.enabled and runtime.data then
 		if CONFIG.highlightAffordable then
-			upgrades.render(runtime.data, runtime.nearest)
+			runSafe("highlight render", upgrades.render, runtime.data, runtime.nearest)
 		else
-			upgrades.clear()
+			runSafe("highlight clear", upgrades.clear)
 		end
 
 		if CONFIG.showWaypoint then
-			upgrades.updateWaypoint(runtime.nearest)
+			runSafe("waypoint update", upgrades.updateWaypoint, runtime.nearest)
 		else
-			upgrades.hideWaypoint()
+			runSafe("waypoint hide", upgrades.hideWaypoint)
 		end
 
 		if CONFIG.autoCollect and now - runtime.lastCollect >= CONFIG.collectInterval then
 			runtime.lastCollect = now
-			runtime.collected = runtime.collected + collector.collectNearby(context, runtime.data)
+			runtime.collected = runtime.collected + (runSafe("collect", collector.collectNearby, context, runtime.data) or 0)
 		end
 	else
-		upgrades.clear()
-		upgrades.hideWaypoint()
+		runSafe("highlight clear", upgrades.clear)
+		runSafe("waypoint hide", upgrades.hideWaypoint)
 	end
 
-	ui.update({
+	runSafe("ui update", ui.update, {
 		data = runtime.data,
 		nearest = runtime.nearest,
 		cheapest = runtime.cheapest,
-		stats = stats.get(),
+		stats = runSafe("stats get", stats.get) or {},
 		collected = runtime.collected,
 	})
 end)
 
-task.spawn(function()
+local spawn = task and task.spawn or coroutine.wrap
+spawn(function()
 	while isActiveToken() do
-		task.wait(15)
+		if task and task.wait then
+			task.wait(15)
+		else
+			wait(15)
+		end
 		saveSettings()
 	end
 end)

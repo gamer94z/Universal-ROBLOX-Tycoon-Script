@@ -58,14 +58,29 @@ return function()
 			return object
 		end
 		if object:IsA("Model") then
-			return object.PrimaryPart or object:FindFirstChildWhichIsA("BasePart", true)
+			if object.PrimaryPart then
+				return object.PrimaryPart
+			end
 		end
-		return object:FindFirstChildWhichIsA("BasePart", true)
+		for _, descendant in ipairs(object:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				return descendant
+			end
+		end
+		return nil
 	end
 
 	local function hasTouchInterest(object)
 		local part = getTouchPart(object)
-		return part and part:FindFirstChildWhichIsA("TouchTransmitter") ~= nil
+		if not part then
+			return false
+		end
+		for _, child in ipairs(part:GetChildren()) do
+			if child:IsA("TouchTransmitter") then
+				return true
+			end
+		end
+		return false
 	end
 
 	local function getModelScore(model)

@@ -8,7 +8,11 @@ return function()
 		end
 		pcall(function()
 			firetouchinterest(root, part, 0)
-			task.wait()
+			if task and task.wait then
+				task.wait()
+			else
+				wait()
+			end
 			firetouchinterest(root, part, 1)
 		end)
 		return true
