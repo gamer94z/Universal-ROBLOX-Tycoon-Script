@@ -238,10 +238,12 @@ return function(context)
 	toggleRow("highlightAffordable", "HIGHLIGHT UPGRADES")
 	toggleRow("showLabels", "BUTTON LABELS")
 	toggleRow("showWaypoint", "WAYPOINT")
+	toggleRow("requireOwnerMatch", "OWNER SAFE MODE")
 	toggleRow("autoLoadGamePreset", "PLACE PRESET")
 	cycleRow("buyMode", "BUY MODE")
 	cycleRow("collectMode", "COLLECT MODE")
 	statRow("base", "BASE")
+	statRow("safe", "SAFE MODE")
 	statRow("cash", "CASH")
 	statRow("income", "INCOME / MIN")
 	statRow("buttons", "AFFORDABLE")
@@ -314,6 +316,15 @@ return function(context)
 		end
 
 		labels.base.Text = trim(data.rootName or "Scanning", 18)
+		if labels.safe then
+			if CONFIG.requireOwnerMatch then
+				labels.safe.Text = data.ownerMatch and "OWNER VERIFIED" or "BLOCKED"
+				labels.safe.TextColor3 = data.ownerMatch and Color3.fromRGB(154, 230, 180) or Color3.fromRGB(255, 154, 154)
+			else
+				labels.safe.Text = "RELAXED"
+				labels.safe.TextColor3 = Color3.fromRGB(255, 214, 102)
+			end
+		end
 		labels.cash.Text = tostring(stats.cash or 0)
 		labels.income.Text = tostring(stats.cashPerMinute or 0)
 		labels.buttons.Text = tostring(data.affordableCount or affordable)

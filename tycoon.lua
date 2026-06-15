@@ -27,14 +27,18 @@ local CONFIG = {
 	highlightAffordable = true,
 	showLabels = true,
 	showWaypoint = true,
+	requireOwnerMatch = true,
 	buyMode = "Nearest",
 	collectMode = "Nearby",
 	collectRange = 26,
-	scanInterval = 2,
+	scanInterval = 4,
+	renderInterval = 0.5,
+	uiInterval = 0.25,
 	collectInterval = 0.45,
 	buyInterval = 1.1,
-	maxButtons = 80,
-	maxDrops = 120,
+	maxButtons = 50,
+	maxDrops = 60,
+	maxLabels = 16,
 	uiOffsetX = 24,
 	uiOffsetY = 180,
 	moduleBaseUrl = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/main/tycoon_modules",
@@ -285,6 +289,8 @@ local runtime = {
 	lastScan = 0,
 	lastCollect = 0,
 	lastBuy = 0,
+	lastRender = 0,
+	lastUi = 0,
 	data = nil,
 	nearest = nil,
 	cheapest = nil,
@@ -318,6 +324,10 @@ ui.onToggle("showWaypoint", function(value)
 	CONFIG.showWaypoint = value
 	saveSettings()
 end)
+ui.onToggle("requireOwnerMatch", function(value)
+	CONFIG.requireOwnerMatch = value
+	saveSettings()
+end)
 ui.onToggle("autoLoadGamePreset", function(value)
 	CONFIG.autoLoadGamePreset = value
 	saveSettings()
@@ -343,6 +353,16 @@ local function isActiveToken()
 	return SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN
 end
 
+local function automationAllowed(data)
+	if not data then
+		return false
+	end
+	if CONFIG.requireOwnerMatch and not data.ownerMatch then
+		return false
+	end
+	return true
+end
+
 RunService.Heartbeat:Connect(function(deltaTime)
 	if not isActiveToken() then
 		cleanup()
@@ -363,20 +383,23 @@ RunService.Heartbeat:Connect(function(deltaTime)
 
 	if CONFIG.enabled and runtime.data then
 		runtime.data.showLabels = CONFIG.showLabels
-		if CONFIG.highlightAffordable then
-			runSafe("highlight render", upgrades.render, runtime.data, runtime.nearest)
-		else
-			runSafe("highlight clear", upgrades.clear)
-		end
-		runSafe("label render", upgrades.renderLabels, runtime.data, runtime.nearest)
+		if now - runtime.lastRender >= CONFIG.renderInterval then
+			runtime.lastRender = now
+			if CONFIG.highlightAffordable then
+				runSafe("highlight render", upgrades.render, runtime.data, runtime.nearest)
+			else
+				runSafe("highlight clear", upgrades.clear)
+			end
+			runSafe("label render", upgrades.renderLabels, runtime.data, runtime.nearest)
 
-		if CONFIG.showWaypoint then
-			runSafe("waypoint update", upgrades.updateWaypoint, runtime.nearest or runtime.cheapest)
-		else
-			runSafe("waypoint hide", upgrades.hideWaypoint)
+			if CONFIG.showWaypoint then
+				runSafe("waypoint update", upgrades.updateWaypoint, runtime.nearest or runtime.cheapest)
+			else
+				runSafe("waypoint hide", upgrades.hideWaypoint)
+			end
 		end
 
-		if CONFIG.autoBuy and now - runtime.lastBuy >= CONFIG.buyInterval then
+		if automationAllowed(runtime.data) and CONFIG.autoBuy and now - runtime.lastBuy >= CONFIG.buyInterval then
 			runtime.lastBuy = now
 			local target = upgrades.choosePurchase(runtime.data, getLocalRoot(), CONFIG.buyMode)
 			if target and collector.buyButton(context, target) then
@@ -384,7 +407,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			end
 		end
 
-		if CONFIG.autoCollect and now - runtime.lastCollect >= CONFIG.collectInterval then
+		if automationAllowed(runtime.data) and CONFIG.autoCollect and now - runtime.lastCollect >= CONFIG.collectInterval then
 			runtime.lastCollect = now
 			runtime.collected = runtime.collected + (runSafe("collect", collector.collectNearby, context, runtime.data) or 0)
 		end
@@ -394,16 +417,19 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		runSafe("waypoint hide", upgrades.hideWaypoint)
 	end
 
-	runSafe("ui update", ui.update, {
-		data = runtime.data,
-		nearest = runtime.nearest,
-		cheapest = runtime.cheapest,
-		bestValue = runtime.bestValue,
-		nextLocked = runtime.nextLocked,
-		stats = runSafe("stats get", stats.get) or {},
-		collected = runtime.collected,
-		bought = runtime.bought,
-	})
+	if now - runtime.lastUi >= CONFIG.uiInterval then
+		runtime.lastUi = now
+		runSafe("ui update", ui.update, {
+			data = runtime.data,
+			nearest = runtime.nearest,
+			cheapest = runtime.cheapest,
+			bestValue = runtime.bestValue,
+			nextLocked = runtime.nextLocked,
+			stats = runSafe("stats get", stats.get) or {},
+			collected = runtime.collected,
+			bought = runtime.bought,
+		})
+	end
 end)
 
 local spawn = task and task.spawn or coroutine.wrap

@@ -6,6 +6,21 @@ return function()
 		Cash = true,
 		Money = true,
 	}
+	local PAID_PURCHASE_WORDS = {
+		"robux",
+		"gamepass",
+		"game pass",
+		"developer product",
+		"dev product",
+		"productid",
+		"product id",
+		"gamepassid",
+		"game pass id",
+		"premium",
+		"r$",
+		" r$",
+		"rbx",
+	}
 
 	local function lower(text)
 		return tostring(text or ""):lower()
@@ -18,6 +33,25 @@ return function()
 				return true
 			end
 		end
+		return false
+	end
+
+	local function isPaidPurchase(object)
+		if hasAny(object.Name, PAID_PURCHASE_WORDS) then
+			return true
+		end
+
+		for _, descendant in ipairs(object:GetDescendants()) do
+			if hasAny(descendant.Name, PAID_PURCHASE_WORDS) then
+				return true
+			end
+			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+				if hasAny(descendant.Text, PAID_PURCHASE_WORDS) then
+					return true
+				end
+			end
+		end
+
 		return false
 	end
 
@@ -118,18 +152,23 @@ return function()
 		for _, descendant in ipairs(root:GetDescendants()) do
 			local name = lower(descendant.Name)
 			local isButton = hasAny(name, { "button", "buy", "purchase", "upgrade" }) or descendant:FindFirstChild("Cost") or descendant:FindFirstChild("Price")
-			local isDrop = hasAny(name, { "drop", "cash", "money", "collect", "collector" })
+			local isDrop = not isButton and hasAny(name, { "drop", "cash", "money", "collect", "collector" })
 
 			if isButton and hasTouchInterest(descendant) and #data.buttons < context.CONFIG.maxButtons then
-				local price = extractPrice(descendant)
-				table.insert(data.buttons, {
-					object = descendant,
-					part = getTouchPart(descendant),
-					price = price,
-					affordable = price == nil or price <= cash,
-					locked = price ~= nil and price > cash,
-					name = descendant.Name,
-				})
+				if isPaidPurchase(descendant) then
+					data.paidSkipped = data.paidSkipped + 1
+				else
+					local price = extractPrice(descendant)
+					table.insert(data.buttons, {
+						object = descendant,
+						part = getTouchPart(descendant),
+						price = price,
+						affordable = price == nil or price <= cash,
+						locked = price ~= nil and price > cash,
+						paidPurchase = false,
+						name = descendant.Name,
+					})
+				end
 			elseif isDrop and hasTouchInterest(descendant) and #data.drops < context.CONFIG.maxDrops then
 				table.insert(data.drops, {
 					object = descendant,
@@ -175,12 +214,21 @@ return function()
 			drops = {},
 			cash = getCash(context),
 			owned = selected ~= nil,
+			maxLabels = context.CONFIG.maxLabels or 16,
+			paidSkipped = 0,
 		}
+		data.safeAutomation = not context.CONFIG.requireOwnerMatch or data.ownerMatch
+
+		if context.CONFIG.requireOwnerMatch and not data.ownerMatch then
+			data.affordableCount = 0
+			data.lockedCount = 0
+			data.totalButtons = 0
+			data.progressPercent = 0
+			data.debug = string.format("%s | owner no | automation blocked", data.rootName)
+			return data
+		end
 
 		collectCandidates(data.root, data, context)
-		if #data.buttons == 0 and data.root ~= workspace then
-			collectCandidates(workspace, data, context)
-		end
 
 		local affordable = 0
 		local locked = 0
@@ -204,10 +252,10 @@ return function()
 		data.totalButtons = #data.buttons
 		data.progressPercent = #data.buttons > 0 and math.floor((affordable / #data.buttons) * 100 + 0.5) or 0
 		data.debug = string.format(
-			"%s | score %d | owner %s | buttons %d | drops %d",
+			"%s | owner %s | paid skip %d | buttons %d | drops %d",
 			data.rootName,
-			data.rootScore,
 			data.ownerMatch and "yes" or "no",
+			data.paidSkipped,
 			#data.buttons,
 			#data.drops
 		)

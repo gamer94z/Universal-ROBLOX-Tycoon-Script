@@ -42,7 +42,7 @@ return function()
 		local best
 		local bestDistance = math.huge
 		for _, button in ipairs(data.buttons) do
-			if button.affordable and button.part and button.part.Parent then
+			if button.affordable and not button.paidPurchase and button.part and button.part.Parent then
 				local distance = getDistance(button, root)
 				if distance < bestDistance then
 					bestDistance = distance
@@ -61,7 +61,7 @@ return function()
 		local best
 		local bestPrice = math.huge
 		for _, button in ipairs(data.buttons) do
-			if button.affordable then
+			if button.affordable and not button.paidPurchase then
 				local price = button.price or 0
 				if price < bestPrice then
 					bestPrice = price
@@ -80,7 +80,7 @@ return function()
 		local best
 		local bestPrice = -math.huge
 		for _, button in ipairs(data.buttons) do
-			if button.affordable then
+			if button.affordable and not button.paidPurchase then
 				local price = button.price or 0
 				if price > bestPrice then
 					bestPrice = price
@@ -99,7 +99,7 @@ return function()
 		local best
 		local bestPrice = math.huge
 		for _, button in ipairs(data.buttons) do
-			if button.locked and button.price and button.price < bestPrice then
+			if button.locked and not button.paidPurchase and button.price and button.price < bestPrice then
 				bestPrice = button.price
 				best = button
 			end
@@ -125,7 +125,7 @@ return function()
 		local seen = {}
 		for _, button in ipairs(data.buttons) do
 			local object = button.object
-			if button.affordable and object and object.Parent then
+			if button.affordable and not button.paidPurchase and object and object.Parent then
 				seen[object] = true
 				local highlight = highlights[object]
 				if not highlight then
@@ -186,7 +186,7 @@ return function()
 
 		local seen = {}
 		for index, button in ipairs(data.buttons) do
-			if index > 24 then
+			if index > (data.maxLabels or 16) then
 				break
 			end
 			if button.part and button.part.Parent then

@@ -22,6 +22,9 @@ return function()
 		if not data or not data.drops then
 			return 0
 		end
+		if context.CONFIG.requireOwnerMatch and not data.ownerMatch then
+			return 0
+		end
 
 		local root = context.getLocalRoot()
 		if not root then
@@ -44,7 +47,7 @@ return function()
 	end
 
 	local function buyButton(context, button)
-		if not button or not button.part then
+		if not button or not button.part or button.paidPurchase then
 			return false
 		end
 		local root = context.getLocalRoot()
