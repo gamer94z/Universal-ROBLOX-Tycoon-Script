@@ -53,6 +53,26 @@ return function()
 		"pass",
 		"product",
 	}
+	local MACHINE_ANCESTOR_WORDS = {
+		"purchasedobjects",
+		"purchased",
+		"dropper",
+		"upgrader",
+		"conveyor",
+		"furnace",
+		"machine",
+		"processor",
+		"generator",
+		"producer",
+	}
+	local PURCHASE_CONTAINER_WORDS = {
+		"buttons",
+		"button",
+		"buybuttons",
+		"purchasebuttons",
+		"pads",
+		"buy pads",
+	}
 
 	local function lower(text)
 		return tostring(text or ""):lower()
@@ -64,6 +84,17 @@ return function()
 			if text:find(word, 1, true) then
 				return true
 			end
+		end
+		return false
+	end
+
+	local function hasAncestorNamed(object, stopAt, words)
+		local current = object and object.Parent
+		while current and current ~= stopAt and current ~= workspace do
+			if hasAny(current.Name, words) then
+				return true
+			end
+			current = current.Parent
 		end
 		return false
 	end
@@ -125,6 +156,25 @@ return function()
 			end
 		end
 		return findNumberInName(object.Name)
+	end
+
+	local function hasExplicitPrice(object)
+		if object:FindFirstChild("Cost") or object:FindFirstChild("Price") then
+			return true
+		end
+
+		for _, descendant in ipairs(object:GetDescendants()) do
+			if PRICE_NAMES[descendant.Name] and (descendant:IsA("IntValue") or descendant:IsA("NumberValue")) then
+				return true
+			end
+			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+				if findNumberInName(descendant.Text) then
+					return true
+				end
+			end
+		end
+
+		return findNumberInName(object.Name) ~= nil
 	end
 
 	local function getTouchPart(object)
@@ -262,7 +312,11 @@ return function()
 		local cash = getCash(context)
 		for _, descendant in ipairs(root:GetDescendants()) do
 			local name = lower(descendant.Name)
-			local isButton = hasAny(name, { "button", "buy", "purchase", "upgrade" }) or descendant:FindFirstChild("Cost") or descendant:FindFirstChild("Price")
+			local inPurchaseContainer = hasAncestorNamed(descendant, root, PURCHASE_CONTAINER_WORDS)
+			local inMachineContainer = hasAncestorNamed(descendant, root, MACHINE_ANCESTOR_WORDS)
+			local explicitPrice = hasExplicitPrice(descendant)
+			local isPurchaseNamed = hasAny(name, { "button", "buy", "purchase" })
+			local isButton = (isPurchaseNamed or explicitPrice) and (inPurchaseContainer or isPurchaseNamed) and not inMachineContainer
 			local isDrop = not isButton and hasAny(name, { "drop", "cash", "money", "collect", "collector" })
 
 			if isButton and hasTouchInterest(descendant) and #data.buttons < context.CONFIG.maxButtons then
@@ -270,18 +324,22 @@ return function()
 					data.paidSkipped = data.paidSkipped + 1
 				else
 					local price = extractPrice(descendant)
-					table.insert(data.buttons, {
-						object = descendant,
-						part = getTouchPart(descendant),
-						price = price,
-						affordable = price == nil or price <= cash,
-						locked = price ~= nil and price > cash,
-						paidPurchase = false,
-						ownerMatch = data.ownerMatch,
-						ownerVerified = data.ownerVerified,
-						root = data.root,
-						name = descendant.Name,
-					})
+					if price and price > 0 then
+						table.insert(data.buttons, {
+							object = descendant,
+							part = getTouchPart(descendant),
+							price = price,
+							affordable = price <= cash,
+							locked = price > cash,
+							paidPurchase = false,
+							ownerMatch = data.ownerMatch,
+							ownerVerified = data.ownerVerified,
+							root = data.root,
+							name = descendant.Name,
+						})
+					else
+						data.paidSkipped = data.paidSkipped + 1
+					end
 				end
 			elseif isDrop and not isBlockedInteraction(descendant) and hasCollectorActivation(descendant) and #data.drops < context.CONFIG.maxDrops then
 				table.insert(data.drops, {
