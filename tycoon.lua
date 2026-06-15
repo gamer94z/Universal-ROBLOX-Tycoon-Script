@@ -20,7 +20,7 @@ SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN = ACTIVE_TOKEN
 
 local CONFIG = {
 	version = "0.1.0",
-	enabled = true,
+	enabled = false,
 	autoCollect = false,
 	autoBuy = false,
 	autoLoadGamePreset = true,
@@ -31,15 +31,15 @@ local CONFIG = {
 	touchMode = "Virtual",
 	buyMode = "Nearest",
 	collectMode = "Nearby",
-	collectRange = 26,
+	collectRange = 90,
 	scanInterval = 5,
 	renderInterval = 0.75,
 	uiInterval = 0.25,
 	collectInterval = 0.75,
 	buyInterval = 1.35,
-	maxButtons = 36,
-	maxDrops = 40,
-	maxLabels = 8,
+	maxButtons = 80,
+	maxDrops = 80,
+	maxLabels = 12,
 	uiOffsetX = 24,
 	uiOffsetY = 180,
 	moduleBaseUrl = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/main/tycoon_modules",
@@ -76,10 +76,11 @@ local function loadSettings()
 	end
 
 	for key, value in pairs(source) do
-		if CONFIG[key] ~= nil and key ~= "version" then
+		if CONFIG[key] ~= nil and key ~= "version" and key ~= "enabled" then
 			CONFIG[key] = value
 		end
 	end
+	CONFIG.enabled = false
 end
 
 local function saveSettings()

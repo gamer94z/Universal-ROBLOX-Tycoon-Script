@@ -341,14 +341,14 @@ return function()
 			end)
 			if ok and cframe and size then
 				local localPosition = cframe:PointToObjectSpace(localRoot.Position)
-				local padding = 18
+				local padding = 60
 				return math.abs(localPosition.X) <= (size.X * 0.5) + padding
 					and math.abs(localPosition.Y) <= (size.Y * 0.5) + padding
 					and math.abs(localPosition.Z) <= (size.Z * 0.5) + padding
 			end
 		end
 
-		local padding = 18
+		local padding = 60
 		local minX, minY, minZ = math.huge, math.huge, math.huge
 		local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
 		local found = false
