@@ -1,4 +1,12 @@
 return function()
+	local CACHE_TTL = 20
+	local cache = {
+		purchaseContainers = {},
+		collectorCandidates = {},
+		ownerMatches = {},
+		bounds = {},
+	}
+
 	local PRICE_NAMES = {
 		cost = true,
 		price = true,
@@ -284,13 +292,45 @@ return function()
 	end
 
 	local function getPurchaseContainers(root)
+		local now = os.clock()
+		local cached = cache.purchaseContainers[root]
+		if cached and cached.expires > now then
+			return cached.items
+		end
+
 		local containers = {}
 		for _, descendant in ipairs(root:GetDescendants()) do
 			if (descendant:IsA("Folder") or descendant:IsA("Model")) and isPurchaseContainer(descendant) then
 				table.insert(containers, descendant)
 			end
 		end
+		cache.purchaseContainers[root] = {
+			items = containers,
+			expires = now + CACHE_TTL,
+		}
 		return containers
+	end
+
+	local function getCollectorCandidates(root)
+		local now = os.clock()
+		local cached = cache.collectorCandidates[root]
+		if cached and cached.expires > now then
+			return cached.items
+		end
+
+		local candidates = {}
+		for _, descendant in ipairs(root:GetDescendants()) do
+			local name = lower(descendant.Name)
+			if hasAny(name, { "drop", "cash", "money", "collect", "collector" }) and not isPurchaseContainer(descendant) then
+				table.insert(candidates, descendant)
+			end
+		end
+
+		cache.collectorCandidates[root] = {
+			items = candidates,
+			expires = now + CACHE_TTL,
+		}
+		return candidates
 	end
 
 	local function getModelScore(model)
@@ -306,27 +346,99 @@ return function()
 	end
 
 	local function ownerMatches(context, object)
+		local now = os.clock()
+		local cached = cache.ownerMatches[object]
+		if cached and cached.expires > now then
+			return cached.value
+		end
+
 		local playerName = lower(context.LOCAL_PLAYER.Name)
 		local displayName = lower(context.LOCAL_PLAYER.DisplayName)
+		local matched = false
 
 		for _, descendant in ipairs(object:GetDescendants()) do
 			local name = lower(descendant.Name)
 			if name:find("owner") then
 				if descendant:IsA("ObjectValue") and descendant.Value == context.LOCAL_PLAYER then
-					return true
+					matched = true
+					break
 				end
 				if descendant:IsA("StringValue") and (lower(descendant.Value):find(playerName, 1, true) or lower(descendant.Value):find(displayName, 1, true)) then
-					return true
+					matched = true
+					break
 				end
 				if descendant:IsA("IntValue") and tonumber(descendant.Value) == context.LOCAL_PLAYER.UserId then
-					return true
+					matched = true
+					break
 				end
 				if (descendant:IsA("TextLabel") or descendant:IsA("TextButton")) and (lower(descendant.Text):find(playerName, 1, true) or lower(descendant.Text):find(displayName, 1, true)) then
-					return true
+					matched = true
+					break
 				end
 			end
 		end
-		return false
+
+		cache.ownerMatches[object] = {
+			value = matched,
+			expires = now + CACHE_TTL,
+		}
+		return matched
+	end
+
+	local function getRootBounds(root)
+		local now = os.clock()
+		local cached = cache.bounds[root]
+		if cached and cached.expires > now then
+			return cached
+		end
+
+		local bounds
+		if root:IsA("Model") then
+			local ok, cframe, size = pcall(function()
+				return root:GetBoundingBox()
+			end)
+			if ok and cframe and size then
+				bounds = {
+					cframe = cframe,
+					size = size,
+				}
+			end
+		end
+
+		if not bounds then
+			local minX, minY, minZ = math.huge, math.huge, math.huge
+			local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+			local found = false
+			for _, descendant in ipairs(root:GetDescendants()) do
+				if descendant:IsA("BasePart") then
+					found = true
+					local position = descendant.Position
+					local half = descendant.Size * 0.5
+					minX = math.min(minX, position.X - half.X)
+					minY = math.min(minY, position.Y - half.Y)
+					minZ = math.min(minZ, position.Z - half.Z)
+					maxX = math.max(maxX, position.X + half.X)
+					maxY = math.max(maxY, position.Y + half.Y)
+					maxZ = math.max(maxZ, position.Z + half.Z)
+				end
+			end
+
+			if found then
+				bounds = {
+					minX = minX,
+					minY = minY,
+					minZ = minZ,
+					maxX = maxX,
+					maxY = maxY,
+					maxZ = maxZ,
+				}
+			end
+		end
+
+		bounds = bounds or {}
+		bounds.expires = now + CACHE_TTL
+		cache.bounds[root] = bounds
+		return bounds
 	end
 
 	local function localPlayerInsideRoot(context, root)
@@ -335,45 +447,27 @@ return function()
 			return false
 		end
 
-		if root:IsA("Model") then
-			local ok, cframe, size = pcall(function()
-				return root:GetBoundingBox()
-			end)
-			if ok and cframe and size then
-				local localPosition = cframe:PointToObjectSpace(localRoot.Position)
-				local padding = 60
-				return math.abs(localPosition.X) <= (size.X * 0.5) + padding
-					and math.abs(localPosition.Y) <= (size.Y * 0.5) + padding
-					and math.abs(localPosition.Z) <= (size.Z * 0.5) + padding
-			end
+		local bounds = getRootBounds(root)
+		if not bounds then
+			return false
 		end
 
 		local padding = 60
-		local minX, minY, minZ = math.huge, math.huge, math.huge
-		local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
-		local found = false
-		for _, descendant in ipairs(root:GetDescendants()) do
-			if descendant:IsA("BasePart") then
-				found = true
-				local position = descendant.Position
-				local half = descendant.Size * 0.5
-				minX = math.min(minX, position.X - half.X)
-				minY = math.min(minY, position.Y - half.Y)
-				minZ = math.min(minZ, position.Z - half.Z)
-				maxX = math.max(maxX, position.X + half.X)
-				maxY = math.max(maxY, position.Y + half.Y)
-				maxZ = math.max(maxZ, position.Z + half.Z)
-			end
+		if bounds.cframe and bounds.size then
+			local localPosition = bounds.cframe:PointToObjectSpace(localRoot.Position)
+			return math.abs(localPosition.X) <= (bounds.size.X * 0.5) + padding
+				and math.abs(localPosition.Y) <= (bounds.size.Y * 0.5) + padding
+				and math.abs(localPosition.Z) <= (bounds.size.Z * 0.5) + padding
 		end
 
-		if not found then
+		if not bounds.minX then
 			return false
 		end
 
 		local position = localRoot.Position
-		return position.X >= minX - padding and position.X <= maxX + padding
-			and position.Y >= minY - padding and position.Y <= maxY + padding
-			and position.Z >= minZ - padding and position.Z <= maxZ + padding
+		return position.X >= bounds.minX - padding and position.X <= bounds.maxX + padding
+			and position.Y >= bounds.minY - padding and position.Y <= bounds.maxY + padding
+			and position.Z >= bounds.minZ - padding and position.Z <= bounds.maxZ + padding
 	end
 
 	local function collectCandidates(root, data, context)
@@ -381,34 +475,36 @@ return function()
 		local seenButtonObjects = {}
 
 		for _, container in ipairs(getPurchaseContainers(root)) do
-			for _, candidate in ipairs(container:GetChildren()) do
-				if #data.buttons >= context.CONFIG.maxButtons then
-					break
-				end
-				if not seenButtonObjects[candidate] then
-					seenButtonObjects[candidate] = true
+			if container and container.Parent then
+				for _, candidate in ipairs(container:GetChildren()) do
+					if #data.buttons >= context.CONFIG.maxButtons then
+						break
+					end
+					if candidate.Parent and not seenButtonObjects[candidate] then
+						seenButtonObjects[candidate] = true
 
-					local explicitPrice = hasExplicitPrice(candidate)
-					if explicitPrice and hasTouchInterest(candidate) and not hasAncestorNamed(candidate, root, { "purchasedobjects", "purchased" }) then
-						if isBlockedInteraction(candidate) then
-							data.paidSkipped = data.paidSkipped + 1
-						else
-							local price = extractPrice(candidate)
-							if price and price > 0 then
-								table.insert(data.buttons, {
-									object = candidate,
-									part = getTouchPart(candidate),
-									price = price,
-									affordable = price <= cash,
-									locked = price > cash,
-									paidPurchase = false,
-									ownerMatch = data.ownerMatch,
-									ownerVerified = data.ownerVerified,
-									root = data.root,
-									name = candidate.Name,
-								})
-							else
+						local explicitPrice = hasExplicitPrice(candidate)
+						if explicitPrice and hasTouchInterest(candidate) and not hasAncestorNamed(candidate, root, { "purchasedobjects", "purchased" }) then
+							if isBlockedInteraction(candidate) then
 								data.paidSkipped = data.paidSkipped + 1
+							else
+								local price = extractPrice(candidate)
+								if price and price > 0 then
+									table.insert(data.buttons, {
+										object = candidate,
+										part = getTouchPart(candidate),
+										price = price,
+										affordable = price <= cash,
+										locked = price > cash,
+										paidPurchase = false,
+										ownerMatch = data.ownerMatch,
+										ownerVerified = data.ownerVerified,
+										root = data.root,
+										name = candidate.Name,
+									})
+								else
+									data.paidSkipped = data.paidSkipped + 1
+								end
 							end
 						end
 					end
@@ -416,11 +512,8 @@ return function()
 			end
 		end
 
-		for _, descendant in ipairs(root:GetDescendants()) do
-			local name = lower(descendant.Name)
-			local isDrop = hasAny(name, { "drop", "cash", "money", "collect", "collector" })
-
-			if not isPurchaseContainer(descendant) and isDrop and not isBlockedInteraction(descendant) and hasCollectorActivation(descendant) and #data.drops < context.CONFIG.maxDrops then
+		for _, descendant in ipairs(getCollectorCandidates(root)) do
+			if descendant.Parent and not isBlockedInteraction(descendant) and hasCollectorActivation(descendant) and #data.drops < context.CONFIG.maxDrops then
 				if hasAncestorNamed(descendant, root, PURCHASE_CONTAINER_WORDS) then
 					data.paidSkipped = data.paidSkipped + 1
 				else

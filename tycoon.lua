@@ -32,13 +32,14 @@ local CONFIG = {
 	buyMode = "Nearest",
 	collectMode = "Nearby",
 	collectRange = 90,
-	scanInterval = 5,
-	renderInterval = 0.75,
-	uiInterval = 0.25,
+	scanInterval = 8,
+	renderInterval = 1,
+	uiInterval = 0.35,
+	statsInterval = 1,
 	collectInterval = 0.75,
 	buyInterval = 1.35,
-	maxButtons = 80,
-	maxDrops = 80,
+	maxButtons = 60,
+	maxDrops = 50,
 	maxLabels = 12,
 	uiOffsetX = 24,
 	uiOffsetY = 180,
@@ -293,6 +294,7 @@ local runtime = {
 	lastBuy = 0,
 	lastRender = 0,
 	lastUi = 0,
+	lastStats = 0,
 	data = nil,
 	nearest = nil,
 	cheapest = nil,
@@ -300,10 +302,15 @@ local runtime = {
 	nextLocked = nil,
 	collected = 0,
 	bought = 0,
+	wasEnabled = false,
 }
 
 ui.onToggle("enabled", function(value)
 	CONFIG.enabled = value
+	if value then
+		runtime.lastScan = -math.huge
+		runtime.lastRender = -math.huge
+	end
 	saveSettings()
 end)
 ui.onToggle("autoCollect", function(value)
@@ -373,10 +380,13 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		return
 	end
 
-	runSafe("stats update", stats.update, deltaTime)
 	local now = os.clock()
+	if CONFIG.enabled and now - runtime.lastStats >= CONFIG.statsInterval then
+		runtime.lastStats = now
+		runSafe("stats update", stats.update, deltaTime)
+	end
 
-	if now - runtime.lastScan >= CONFIG.scanInterval then
+	if CONFIG.enabled and now - runtime.lastScan >= CONFIG.scanInterval then
 		runtime.lastScan = now
 		runtime.data = runSafe("scan", scanner.scan, context) or runtime.data
 		runtime.nearest = runSafe("nearest upgrade", upgrades.getNearestAffordable, runtime.data, getLocalRoot())
@@ -386,6 +396,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 	end
 
 	if CONFIG.enabled and runtime.data then
+		runtime.wasEnabled = true
 		runtime.data.showLabels = CONFIG.showLabels
 		if now - runtime.lastRender >= CONFIG.renderInterval then
 			runtime.lastRender = now
@@ -415,7 +426,8 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			runtime.lastCollect = now
 			runtime.collected = runtime.collected + (runSafe("collect", collector.collectNearby, context, runtime.data) or 0)
 		end
-	else
+	elseif runtime.wasEnabled then
+		runtime.wasEnabled = false
 		runSafe("highlight clear", upgrades.clear)
 		runSafe("label clear", upgrades.clearLabels)
 		runSafe("waypoint hide", upgrades.hideWaypoint)
@@ -429,7 +441,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			cheapest = runtime.cheapest,
 			bestValue = runtime.bestValue,
 			nextLocked = runtime.nextLocked,
-			stats = runSafe("stats get", stats.get) or {},
+			stats = {},
 			collected = runtime.collected,
 			bought = runtime.bought,
 		})
