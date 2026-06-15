@@ -317,9 +317,15 @@ return function(context)
 
 		labels.base.Text = trim(data.rootName or "Scanning", 18)
 		if labels.safe then
-			if CONFIG.requireOwnerMatch then
-				labels.safe.Text = data.ownerMatch and "OWNER VERIFIED" or "BLOCKED"
-				labels.safe.TextColor3 = data.ownerMatch and Color3.fromRGB(154, 230, 180) or Color3.fromRGB(255, 154, 154)
+			if data.ownerVerified then
+				labels.safe.Text = "BUY + COLLECT"
+				labels.safe.TextColor3 = Color3.fromRGB(154, 230, 180)
+			elseif data.ownerMatch and data.ownerSource == "position" then
+				labels.safe.Text = "COLLECT ONLY"
+				labels.safe.TextColor3 = Color3.fromRGB(255, 214, 102)
+			elseif CONFIG.requireOwnerMatch then
+				labels.safe.Text = "BLOCKED"
+				labels.safe.TextColor3 = Color3.fromRGB(255, 154, 154)
 			else
 				labels.safe.Text = "RELAXED"
 				labels.safe.TextColor3 = Color3.fromRGB(255, 214, 102)

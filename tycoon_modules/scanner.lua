@@ -21,6 +21,38 @@ return function()
 		" r$",
 		"rbx",
 	}
+	local BLOCKED_INTERACTION_WORDS = {
+		"watch ad",
+		"watch_ad",
+		"video ad",
+		"rewarded ad",
+		"advert",
+		"advertisement",
+		"watch",
+		"video",
+		"sponsor",
+		"reward",
+		"free cash",
+		"free money",
+		"free coins",
+		"double cash",
+		"2x cash",
+		"earn",
+		"invite",
+		"group",
+		"like",
+		"favorite",
+		"follow",
+		"discord",
+		"twitter",
+		"boost",
+		"vip",
+		"shop",
+		"store",
+		"skip",
+		"pass",
+		"product",
+	}
 
 	local function lower(text)
 		return tostring(text or ""):lower()
@@ -36,23 +68,31 @@ return function()
 		return false
 	end
 
-	local function isPaidPurchase(object)
-		if hasAny(object.Name, PAID_PURCHASE_WORDS) then
+	local function hasAnyDescendantText(object, words)
+		if hasAny(object.Name, words) then
 			return true
 		end
 
 		for _, descendant in ipairs(object:GetDescendants()) do
-			if hasAny(descendant.Name, PAID_PURCHASE_WORDS) then
+			if hasAny(descendant.Name, words) then
 				return true
 			end
 			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-				if hasAny(descendant.Text, PAID_PURCHASE_WORDS) then
+				if hasAny(descendant.Text, words) then
 					return true
 				end
 			end
 		end
 
 		return false
+	end
+
+	local function isPaidPurchase(object)
+		return hasAnyDescendantText(object, PAID_PURCHASE_WORDS)
+	end
+
+	local function isBlockedInteraction(object)
+		return isPaidPurchase(object) or hasAnyDescendantText(object, BLOCKED_INTERACTION_WORDS)
 	end
 
 	local function getCash(context)
@@ -117,6 +157,24 @@ return function()
 		return false
 	end
 
+	local function getPrompt(object)
+		if object:IsA("ProximityPrompt") then
+			return object
+		end
+		return object:FindFirstChildWhichIsA("ProximityPrompt", true)
+	end
+
+	local function getClickDetector(object)
+		if object:IsA("ClickDetector") then
+			return object
+		end
+		return object:FindFirstChildWhichIsA("ClickDetector", true)
+	end
+
+	local function hasCollectorActivation(object)
+		return hasTouchInterest(object) or getPrompt(object) ~= nil or getClickDetector(object) ~= nil
+	end
+
 	local function getModelScore(model)
 		local score = 0
 		local name = lower(model.Name)
@@ -130,21 +188,74 @@ return function()
 	end
 
 	local function ownerMatches(context, object)
+		local playerName = lower(context.LOCAL_PLAYER.Name)
+		local displayName = lower(context.LOCAL_PLAYER.DisplayName)
+
 		for _, descendant in ipairs(object:GetDescendants()) do
 			local name = lower(descendant.Name)
 			if name:find("owner") then
 				if descendant:IsA("ObjectValue") and descendant.Value == context.LOCAL_PLAYER then
 					return true
 				end
-				if descendant:IsA("StringValue") and lower(descendant.Value) == lower(context.LOCAL_PLAYER.Name) then
+				if descendant:IsA("StringValue") and (lower(descendant.Value):find(playerName, 1, true) or lower(descendant.Value):find(displayName, 1, true)) then
 					return true
 				end
 				if descendant:IsA("IntValue") and tonumber(descendant.Value) == context.LOCAL_PLAYER.UserId then
 					return true
 				end
+				if (descendant:IsA("TextLabel") or descendant:IsA("TextButton")) and (lower(descendant.Text):find(playerName, 1, true) or lower(descendant.Text):find(displayName, 1, true)) then
+					return true
+				end
 			end
 		end
 		return false
+	end
+
+	local function localPlayerInsideRoot(context, root)
+		local localRoot = context.getLocalRoot and context.getLocalRoot()
+		if not localRoot or not root then
+			return false
+		end
+
+		if root:IsA("Model") then
+			local ok, cframe, size = pcall(function()
+				return root:GetBoundingBox()
+			end)
+			if ok and cframe and size then
+				local localPosition = cframe:PointToObjectSpace(localRoot.Position)
+				local padding = 18
+				return math.abs(localPosition.X) <= (size.X * 0.5) + padding
+					and math.abs(localPosition.Y) <= (size.Y * 0.5) + padding
+					and math.abs(localPosition.Z) <= (size.Z * 0.5) + padding
+			end
+		end
+
+		local padding = 18
+		local minX, minY, minZ = math.huge, math.huge, math.huge
+		local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+		local found = false
+		for _, descendant in ipairs(root:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				found = true
+				local position = descendant.Position
+				local half = descendant.Size * 0.5
+				minX = math.min(minX, position.X - half.X)
+				minY = math.min(minY, position.Y - half.Y)
+				minZ = math.min(minZ, position.Z - half.Z)
+				maxX = math.max(maxX, position.X + half.X)
+				maxY = math.max(maxY, position.Y + half.Y)
+				maxZ = math.max(maxZ, position.Z + half.Z)
+			end
+		end
+
+		if not found then
+			return false
+		end
+
+		local position = localRoot.Position
+		return position.X >= minX - padding and position.X <= maxX + padding
+			and position.Y >= minY - padding and position.Y <= maxY + padding
+			and position.Z >= minZ - padding and position.Z <= maxZ + padding
 	end
 
 	local function collectCandidates(root, data, context)
@@ -155,7 +266,7 @@ return function()
 			local isDrop = not isButton and hasAny(name, { "drop", "cash", "money", "collect", "collector" })
 
 			if isButton and hasTouchInterest(descendant) and #data.buttons < context.CONFIG.maxButtons then
-				if isPaidPurchase(descendant) then
+				if isBlockedInteraction(descendant) then
 					data.paidSkipped = data.paidSkipped + 1
 				else
 					local price = extractPrice(descendant)
@@ -166,13 +277,21 @@ return function()
 						affordable = price == nil or price <= cash,
 						locked = price ~= nil and price > cash,
 						paidPurchase = false,
+						ownerMatch = data.ownerMatch,
+						ownerVerified = data.ownerVerified,
+						root = data.root,
 						name = descendant.Name,
 					})
 				end
-			elseif isDrop and hasTouchInterest(descendant) and #data.drops < context.CONFIG.maxDrops then
+			elseif isDrop and not isBlockedInteraction(descendant) and hasCollectorActivation(descendant) and #data.drops < context.CONFIG.maxDrops then
 				table.insert(data.drops, {
 					object = descendant,
 					part = getTouchPart(descendant),
+					prompt = getPrompt(descendant),
+					clickDetector = getClickDetector(descendant),
+					ownerMatch = data.ownerMatch,
+					ownerVerified = data.ownerVerified,
+					root = data.root,
 					name = descendant.Name,
 				})
 			end
@@ -185,12 +304,14 @@ return function()
 			if child:IsA("Model") or child:IsA("Folder") then
 				local score = getModelScore(child)
 				local owned = ownerMatches(context, child)
+				local inside = localPlayerInsideRoot(context, child)
 				if score >= 8 or owned then
 					table.insert(roots, {
 						root = child,
-						score = owned and (score + 100) or score,
+						score = owned and (score + 100) or (inside and (score + 35) or score),
 						rawScore = score,
-						ownerMatch = owned,
+						ownerMatch = owned or inside,
+						ownerSource = owned and "owner" or (inside and "position" or "none"),
 					})
 				end
 			end
@@ -210,6 +331,8 @@ return function()
 			confidence = selected and math.clamp(selected.score, 0, 100) or 0,
 			rootScore = selected and selected.rawScore or 0,
 			ownerMatch = selected and selected.ownerMatch or false,
+			ownerSource = selected and selected.ownerSource or "none",
+			ownerVerified = selected and selected.ownerSource == "owner" or false,
 			buttons = {},
 			drops = {},
 			cash = getCash(context),
@@ -252,9 +375,10 @@ return function()
 		data.totalButtons = #data.buttons
 		data.progressPercent = #data.buttons > 0 and math.floor((affordable / #data.buttons) * 100 + 0.5) or 0
 		data.debug = string.format(
-			"%s | owner %s | paid skip %d | buttons %d | drops %d",
+			"%s | owner %s:%s | blocked %d | buttons %d | drops %d",
 			data.rootName,
 			data.ownerMatch and "yes" or "no",
+			data.ownerSource or "none",
 			data.paidSkipped,
 			#data.buttons,
 			#data.drops

@@ -353,14 +353,12 @@ local function isActiveToken()
 	return SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN
 end
 
-local function automationAllowed(data)
-	if not data then
-		return false
-	end
-	if CONFIG.requireOwnerMatch and not data.ownerMatch then
-		return false
-	end
-	return true
+local function collectAllowed(data)
+	return data and data.ownerMatch == true
+end
+
+local function buyAllowed(data)
+	return data and data.ownerVerified == true
 end
 
 RunService.Heartbeat:Connect(function(deltaTime)
@@ -399,7 +397,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			end
 		end
 
-		if automationAllowed(runtime.data) and CONFIG.autoBuy and now - runtime.lastBuy >= CONFIG.buyInterval then
+		if buyAllowed(runtime.data) and CONFIG.autoBuy and now - runtime.lastBuy >= CONFIG.buyInterval then
 			runtime.lastBuy = now
 			local target = upgrades.choosePurchase(runtime.data, getLocalRoot(), CONFIG.buyMode)
 			if target and collector.buyButton(context, target) then
@@ -407,7 +405,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			end
 		end
 
-		if automationAllowed(runtime.data) and CONFIG.autoCollect and now - runtime.lastCollect >= CONFIG.collectInterval then
+		if collectAllowed(runtime.data) and CONFIG.autoCollect and now - runtime.lastCollect >= CONFIG.collectInterval then
 			runtime.lastCollect = now
 			runtime.collected = runtime.collected + (runSafe("collect", collector.collectNearby, context, runtime.data) or 0)
 		end
