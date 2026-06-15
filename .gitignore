@@ -1,0 +1,10 @@
+tycoon_settings.json
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.tmp
+*.bak
+*.orig
+*.log
