@@ -25,20 +25,21 @@ local CONFIG = {
 	autoBuy = false,
 	autoLoadGamePreset = true,
 	highlightAffordable = true,
-	showLabels = true,
+	showLabels = false,
 	showWaypoint = true,
 	requireOwnerMatch = true,
+	touchMode = "Virtual",
 	buyMode = "Nearest",
 	collectMode = "Nearby",
 	collectRange = 26,
-	scanInterval = 4,
-	renderInterval = 0.5,
+	scanInterval = 5,
+	renderInterval = 0.75,
 	uiInterval = 0.25,
-	collectInterval = 0.45,
-	buyInterval = 1.1,
-	maxButtons = 50,
-	maxDrops = 60,
-	maxLabels = 16,
+	collectInterval = 0.75,
+	buyInterval = 1.35,
+	maxButtons = 36,
+	maxDrops = 40,
+	maxLabels = 8,
 	uiOffsetX = 24,
 	uiOffsetY = 180,
 	moduleBaseUrl = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/main/tycoon_modules",
@@ -334,6 +335,10 @@ ui.onToggle("autoLoadGamePreset", function(value)
 end)
 ui.onCycle("buyMode", function(value)
 	CONFIG.buyMode = value
+	saveSettings()
+end)
+ui.onCycle("touchMode", function(value)
+	CONFIG.touchMode = value
 	saveSettings()
 end)
 ui.onCycle("collectMode", function(value)

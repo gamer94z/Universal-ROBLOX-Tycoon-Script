@@ -1,12 +1,29 @@
 return function(context)
 	local CONFIG = context.CONFIG
 	local CoreGui = context.CoreGui
+	local UserInputService = game:GetService("UserInputService")
 
 	local callbacks = {}
 	local cycleCallbacks = {}
 	local CYCLES = {
 		buyMode = { "Nearest", "Cheapest", "Value" },
 		collectMode = { "Nearby", "Tycoon", "Collectors" },
+		touchMode = { "Virtual", "Teleport" },
+	}
+
+	local THEME = {
+		window = Color3.fromRGB(20, 22, 30),
+		header = Color3.fromRGB(26, 29, 39),
+		panel = Color3.fromRGB(29, 32, 43),
+		panelAlt = Color3.fromRGB(23, 25, 34),
+		border = Color3.fromRGB(78, 84, 102),
+		text = Color3.fromRGB(244, 246, 252),
+		muted = Color3.fromRGB(172, 180, 200),
+		accent = Color3.fromRGB(88, 166, 255),
+		accentSoft = Color3.fromRGB(39, 72, 116),
+		focus = Color3.fromRGB(255, 214, 102),
+		danger = Color3.fromRGB(255, 116, 116),
+		ok = Color3.fromRGB(117, 255, 160),
 	}
 
 	local function create(className, props)
@@ -27,11 +44,25 @@ return function(context)
 		})
 	end
 
-	local function stroke(parent, color, transparency)
+	local function stroke(parent, color, transparency, thickness)
 		create("UIStroke", {
 			Color = color,
 			Transparency = transparency or 0,
-			Thickness = 1,
+			Thickness = thickness or 1,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			Parent = parent,
+		})
+	end
+
+	local function label(parent, text, size, color, font, align)
+		return create("TextLabel", {
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Font = font or Enum.Font.GothamMedium,
+			Text = text,
+			TextColor3 = color or THEME.text,
+			TextSize = size or 10,
+			TextXAlignment = align or Enum.TextXAlignment.Left,
 			Parent = parent,
 		})
 	end
@@ -45,142 +76,119 @@ return function(context)
 	})
 
 	local panel = create("Frame", {
-		BackgroundColor3 = Color3.fromRGB(9, 16, 28),
+		BackgroundColor3 = THEME.window,
 		BorderSizePixel = 0,
+		ClipsDescendants = true,
 		Position = UDim2.new(0, CONFIG.uiOffsetX, 0, CONFIG.uiOffsetY),
-		Size = UDim2.new(0, 314, 0, 430),
+		Size = UDim2.new(0, 286, 0, 356),
 		Parent = gui,
 	})
 	corner(panel, 8)
-	stroke(panel, Color3.fromRGB(40, 128, 255), 0.35)
+	stroke(panel, THEME.border, 0.25, 1)
 
-	create("UIGradient", {
-		Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, Color3.fromRGB(17, 29, 48)),
-			ColorSequenceKeypoint.new(1, Color3.fromRGB(6, 10, 18)),
-		}),
-		Rotation = 90,
+	local header = create("Frame", {
+		BackgroundColor3 = THEME.header,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 50),
 		Parent = panel,
 	})
 
-	local title = create("TextLabel", {
-		BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBlack,
-		Position = UDim2.new(0, 14, 0, 10),
-		Size = UDim2.new(1, -28, 0, 22),
-		Text = "0xVyrs Tycoon Core",
-		TextColor3 = Color3.fromRGB(225, 242, 255),
-		TextSize = 15,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = panel,
+	create("Frame", {
+		BackgroundColor3 = THEME.accent,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 3),
+		Parent = header,
 	})
 
-	local subtitle = create("TextLabel", {
-		BackgroundTransparency = 1,
+	local title = label(header, "0xVyrs Tycoon", 14, THEME.text, Enum.Font.GothamBlack)
+	title.Position = UDim2.new(0, 12, 0, 9)
+	title.Size = UDim2.new(1, -112, 0, 18)
+
+	local subtitle = label(header, "v" .. CONFIG.version .. "  //  safe automation", 8, THEME.accent, Enum.Font.GothamBold)
+	subtitle.Position = UDim2.new(0, 13, 0, 28)
+	subtitle.Size = UDim2.new(1, -112, 0, 12)
+
+	local stateBadge = create("TextLabel", {
+		AnchorPoint = Vector2.new(1, 0),
+		BackgroundColor3 = THEME.accentSoft,
+		BorderSizePixel = 0,
 		Font = Enum.Font.GothamBold,
-		Position = UDim2.new(0, 14, 0, 31),
-		Size = UDim2.new(1, -28, 0, 14),
-		Text = "v" .. CONFIG.version .. "  //  universal tycoon helper",
-		TextColor3 = Color3.fromRGB(72, 164, 255),
-		TextSize = 9,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = panel,
+		Position = UDim2.new(1, -12, 0, 13),
+		Size = UDim2.new(0, 82, 0, 20),
+		Text = "SCANNING",
+		TextColor3 = THEME.text,
+		TextSize = 8,
+		Parent = header,
 	})
+	corner(stateBadge, 999)
 
-	local body = create("ScrollingFrame", {
-		Active = true,
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	local body = create("Frame", {
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		CanvasSize = UDim2.new(0, 0, 0, 0),
-		Position = UDim2.new(0, 12, 0, 54),
-		ScrollBarImageColor3 = Color3.fromRGB(72, 164, 255),
-		ScrollBarThickness = 3,
-		Size = UDim2.new(1, -24, 1, -66),
+		Position = UDim2.new(0, 10, 0, 60),
+		Size = UDim2.new(1, -20, 1, -70),
 		Parent = panel,
 	})
 
 	create("UIListLayout", {
-		Padding = UDim.new(0, 6),
+		Padding = UDim.new(0, 4),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		Parent = body,
 	})
 
-	local labels = {}
 	local toggles = {}
 	local cycleButtons = {}
 
-	local function row(labelText)
-		local frame = create("Frame", {
-			BackgroundColor3 = Color3.fromRGB(13, 24, 40),
+	local function makeRow(labelText)
+		local row = create("Frame", {
+			BackgroundColor3 = THEME.panel,
 			BorderSizePixel = 0,
 			Size = UDim2.new(1, 0, 0, 24),
 			Parent = body,
 		})
-		corner(frame, 6)
-		return frame
+		corner(row, 7)
+		stroke(row, THEME.border, 0.52, 1)
+
+		local rowLabel = label(row, labelText, 10, THEME.muted, Enum.Font.GothamBold)
+		rowLabel.Position = UDim2.new(0, 10, 0, 0)
+		rowLabel.Size = UDim2.new(1, -112, 1, 0)
+
+		return row
 	end
 
-	local function statRow(key, labelText)
-		local frame = row(labelText)
-		local left = create("TextLabel", {
-			BackgroundTransparency = 1,
-			Font = Enum.Font.GothamBold,
-			Position = UDim2.new(0, 9, 0, 0),
-			Size = UDim2.new(0.48, 0, 1, 0),
-			Text = labelText,
-			TextColor3 = Color3.fromRGB(118, 164, 218),
-			TextSize = 10,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			Parent = frame,
-		})
-		local value = create("TextLabel", {
-			BackgroundTransparency = 1,
-			Font = Enum.Font.GothamBold,
-			Position = UDim2.new(0.48, 0, 0, 0),
-			Size = UDim2.new(0.52, -9, 1, 0),
-			Text = "--",
-			TextColor3 = Color3.fromRGB(228, 244, 255),
-			TextSize = 10,
-			TextXAlignment = Enum.TextXAlignment.Right,
-			Parent = frame,
-		})
-		labels[key] = value
-		return left, value
+	local function setToggleVisual(button, value)
+		button.Text = value and "ON" or "OFF"
+		button.TextColor3 = value and Color3.fromRGB(228, 241, 255) or THEME.muted
+		button.BackgroundColor3 = value and THEME.accentSoft or Color3.fromRGB(35, 40, 53)
+		local buttonStroke = button:FindFirstChildOfClass("UIStroke")
+		if buttonStroke then
+			buttonStroke.Transparency = value and 0.15 or 0.58
+		end
 	end
 
 	local function toggleRow(key, labelText)
-		local frame = row(labelText)
-		create("TextLabel", {
-			BackgroundTransparency = 1,
-			Font = Enum.Font.GothamBold,
-			Position = UDim2.new(0, 9, 0, 0),
-			Size = UDim2.new(1, -64, 1, 0),
-			Text = labelText,
-			TextColor3 = Color3.fromRGB(118, 164, 218),
-			TextSize = 10,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			Parent = frame,
-		})
+		local row = makeRow(labelText)
 		local button = create("TextButton", {
 			AnchorPoint = Vector2.new(1, 0.5),
 			AutoButtonColor = false,
-			BackgroundColor3 = CONFIG[key] and Color3.fromRGB(24, 84, 144) or Color3.fromRGB(31, 42, 58),
+			BackgroundColor3 = THEME.accentSoft,
 			BorderSizePixel = 0,
-			Font = Enum.Font.GothamBlack,
-			Position = UDim2.new(1, -8, 0.5, 0),
-			Size = UDim2.new(0, 48, 0, 16),
-			Text = CONFIG[key] and "ON" or "OFF",
-			TextColor3 = Color3.fromRGB(228, 244, 255),
+			Font = Enum.Font.GothamBold,
+			Position = UDim2.new(1, -9, 0.5, 0),
+			Size = UDim2.new(0, 48, 0, 17),
+			Text = "ON",
+			TextColor3 = THEME.text,
 			TextSize = 9,
-			Parent = frame,
+			Parent = row,
 		})
 		corner(button, 999)
+		stroke(button, THEME.accent, 0.15, 1)
+		setToggleVisual(button, CONFIG[key] == true)
 		toggles[key] = button
+
 		button.MouseButton1Click:Connect(function()
 			CONFIG[key] = not CONFIG[key]
-			button.Text = CONFIG[key] and "ON" or "OFF"
-			button.BackgroundColor3 = CONFIG[key] and Color3.fromRGB(24, 84, 144) or Color3.fromRGB(31, 42, 58)
+			setToggleVisual(button, CONFIG[key])
 			if callbacks[key] then
 				callbacks[key](CONFIG[key])
 			end
@@ -188,33 +196,24 @@ return function(context)
 	end
 
 	local function cycleRow(key, labelText)
-		local frame = row(labelText)
-		create("TextLabel", {
-			BackgroundTransparency = 1,
-			Font = Enum.Font.GothamBold,
-			Position = UDim2.new(0, 9, 0, 0),
-			Size = UDim2.new(1, -108, 1, 0),
-			Text = labelText,
-			TextColor3 = Color3.fromRGB(118, 164, 218),
-			TextSize = 10,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			Parent = frame,
-		})
+		local row = makeRow(labelText)
 		local button = create("TextButton", {
 			AnchorPoint = Vector2.new(1, 0.5),
 			AutoButtonColor = false,
-			BackgroundColor3 = Color3.fromRGB(31, 42, 58),
+			BackgroundColor3 = Color3.fromRGB(35, 40, 53),
 			BorderSizePixel = 0,
-			Font = Enum.Font.GothamBlack,
-			Position = UDim2.new(1, -8, 0.5, 0),
-			Size = UDim2.new(0, 92, 0, 16),
+			Font = Enum.Font.GothamBold,
+			Position = UDim2.new(1, -9, 0.5, 0),
+			Size = UDim2.new(0, 92, 0, 17),
 			Text = tostring(CONFIG[key]),
-			TextColor3 = Color3.fromRGB(228, 244, 255),
+			TextColor3 = THEME.text,
 			TextSize = 8,
-			Parent = frame,
+			Parent = row,
 		})
 		corner(button, 999)
+		stroke(button, THEME.border, 0.35, 1)
 		cycleButtons[key] = button
+
 		button.MouseButton1Click:Connect(function()
 			local values = CYCLES[key] or {}
 			local nextIndex = 1
@@ -233,29 +232,15 @@ return function(context)
 	end
 
 	toggleRow("enabled", "ENABLED")
-	toggleRow("autoCollect", "AUTO COLLECT")
 	toggleRow("autoBuy", "AUTO BUY")
-	toggleRow("highlightAffordable", "HIGHLIGHT UPGRADES")
-	toggleRow("showLabels", "BUTTON LABELS")
-	toggleRow("showWaypoint", "WAYPOINT")
-	toggleRow("requireOwnerMatch", "OWNER SAFE MODE")
-	toggleRow("autoLoadGamePreset", "PLACE PRESET")
+	toggleRow("autoCollect", "AUTO COLLECT")
+	cycleRow("touchMode", "TOUCH MODE")
 	cycleRow("buyMode", "BUY MODE")
 	cycleRow("collectMode", "COLLECT MODE")
-	statRow("base", "BASE")
-	statRow("safe", "SAFE MODE")
-	statRow("cash", "CASH")
-	statRow("income", "INCOME / MIN")
-	statRow("buttons", "AFFORDABLE")
-	statRow("locked", "LOCKED")
-	statRow("progress", "PROGRESS")
-	statRow("nearest", "NEAREST")
-	statRow("cheapest", "CHEAPEST")
-	statRow("value", "BEST VALUE")
-	statRow("nextLocked", "NEXT LOCKED")
-	statRow("collected", "COLLECT TOUCHES")
-	statRow("bought", "BUY TOUCHES")
-	statRow("debug", "SCANNER")
+	toggleRow("highlightAffordable", "HIGHLIGHT")
+	toggleRow("showWaypoint", "WAYPOINT")
+	toggleRow("showLabels", "LABELS")
+	toggleRow("requireOwnerMatch", "OWNER SAFE")
 
 	local dragging = false
 	local dragStart
@@ -287,7 +272,7 @@ return function(context)
 		end)
 	end)
 
-	game:GetService("UserInputService").InputChanged:Connect(function(input)
+	UserInputService.InputChanged:Connect(function(input)
 		if not dragging or (input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch) then
 			return
 		end
@@ -295,54 +280,25 @@ return function(context)
 		panel.Position = UDim2.new(0, panelStart.X + delta.X, 0, panelStart.Y + delta.Y)
 	end)
 
-	local function trim(text, length)
-		text = tostring(text or "--")
-		if #text <= length then
-			return text
-		end
-		return text:sub(1, length - 3) .. "..."
-	end
-
 	local function update(payload)
 		local data = payload.data or {}
-		local stats = payload.stats or {}
-		local affordable = 0
-		if data.buttons then
-			for _, button in ipairs(data.buttons) do
-				if button.affordable then
-					affordable = affordable + 1
-				end
-			end
+		if data.ownerVerified then
+			stateBadge.Text = "READY"
+			stateBadge.BackgroundColor3 = THEME.accentSoft
+			stateBadge.TextColor3 = THEME.text
+		elseif data.ownerMatch then
+			stateBadge.Text = "COLLECT"
+			stateBadge.BackgroundColor3 = Color3.fromRGB(86, 71, 28)
+			stateBadge.TextColor3 = THEME.text
+		elseif CONFIG.requireOwnerMatch then
+			stateBadge.Text = "BLOCKED"
+			stateBadge.BackgroundColor3 = Color3.fromRGB(80, 40, 48)
+			stateBadge.TextColor3 = THEME.danger
+		else
+			stateBadge.Text = "RELAXED"
+			stateBadge.BackgroundColor3 = Color3.fromRGB(86, 71, 28)
+			stateBadge.TextColor3 = THEME.focus
 		end
-
-		labels.base.Text = trim(data.rootName or "Scanning", 18)
-		if labels.safe then
-			if data.ownerVerified then
-				labels.safe.Text = "BUY + COLLECT"
-				labels.safe.TextColor3 = Color3.fromRGB(154, 230, 180)
-			elseif data.ownerMatch and data.ownerSource == "position" then
-				labels.safe.Text = "COLLECT ONLY"
-				labels.safe.TextColor3 = Color3.fromRGB(255, 214, 102)
-			elseif CONFIG.requireOwnerMatch then
-				labels.safe.Text = "BLOCKED"
-				labels.safe.TextColor3 = Color3.fromRGB(255, 154, 154)
-			else
-				labels.safe.Text = "RELAXED"
-				labels.safe.TextColor3 = Color3.fromRGB(255, 214, 102)
-			end
-		end
-		labels.cash.Text = tostring(stats.cash or 0)
-		labels.income.Text = tostring(stats.cashPerMinute or 0)
-		labels.buttons.Text = tostring(data.affordableCount or affordable)
-		labels.locked.Text = tostring(data.lockedCount or 0)
-		labels.progress.Text = string.format("%d%%", data.progressPercent or 0)
-		labels.nearest.Text = payload.nearest and trim(payload.nearest.name, 18) or "None"
-		labels.cheapest.Text = payload.cheapest and trim(payload.cheapest.name, 18) or "None"
-		labels.value.Text = payload.bestValue and trim(payload.bestValue.name, 18) or "None"
-		labels.nextLocked.Text = payload.nextLocked and trim(payload.nextLocked.name, 18) or "None"
-		labels.collected.Text = tostring(payload.collected or 0)
-		labels.bought.Text = tostring(payload.bought or 0)
-		labels.debug.Text = trim(data.debug or "Scanning", 28)
 	end
 
 	return {
