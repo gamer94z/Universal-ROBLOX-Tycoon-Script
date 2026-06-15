@@ -2,6 +2,7 @@ return function(context)
 	local CONFIG = context.CONFIG
 	local CoreGui = context.CoreGui
 	local UserInputService = game:GetService("UserInputService")
+	local TweenService = game:GetService("TweenService")
 
 	local callbacks = {}
 	local cycleCallbacks = {}
@@ -67,6 +68,13 @@ return function(context)
 		})
 	end
 
+	local function tween(instance, duration, props, style, direction)
+		local info = TweenInfo.new(duration, style or Enum.EasingStyle.Quad, direction or Enum.EasingDirection.Out)
+		local created = TweenService:Create(instance, info, props)
+		created:Play()
+		return created
+	end
+
 	local gui = create("ScreenGui", {
 		Name = "TycoonCoreGUI",
 		IgnoreGuiInset = true,
@@ -77,9 +85,10 @@ return function(context)
 
 	local panel = create("Frame", {
 		BackgroundColor3 = THEME.window,
+		BackgroundTransparency = 0.12,
 		BorderSizePixel = 0,
 		ClipsDescendants = true,
-		Position = UDim2.new(0, CONFIG.uiOffsetX, 0, CONFIG.uiOffsetY),
+		Position = UDim2.new(0, CONFIG.uiOffsetX - 14, 0, CONFIG.uiOffsetY),
 		Size = UDim2.new(0, 286, 0, 356),
 		Parent = gui,
 	})
@@ -88,6 +97,7 @@ return function(context)
 
 	local header = create("Frame", {
 		BackgroundColor3 = THEME.header,
+		BackgroundTransparency = 0.18,
 		BorderSizePixel = 0,
 		Size = UDim2.new(1, 0, 0, 50),
 		Parent = panel,
@@ -121,6 +131,118 @@ return function(context)
 		Parent = header,
 	})
 	corner(stateBadge, 999)
+
+	local toastLayer = create("Frame", {
+		AnchorPoint = Vector2.new(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Position = UDim2.new(1, -16, 1, -16),
+		Size = UDim2.new(0, 260, 0, 180),
+		ZIndex = 30,
+		Parent = gui,
+	})
+
+	create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Vertical,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Bottom,
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = toastLayer,
+	})
+
+	local function showToast(titleText, detailText, accentColor)
+		local toast = create("Frame", {
+			AnchorPoint = Vector2.new(1, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundColor3 = Color3.fromRGB(20, 24, 34),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Position = UDim2.new(0, 24, 0, 0),
+			Size = UDim2.new(1, 0, 0, 0),
+			ZIndex = 31,
+			Parent = toastLayer,
+		})
+		corner(toast, 10)
+		stroke(toast, accentColor or THEME.accent, 0.2, 1)
+
+		create("UIPadding", {
+			PaddingLeft = UDim.new(0, 12),
+			PaddingRight = UDim.new(0, 12),
+			PaddingTop = UDim.new(0, 9),
+			PaddingBottom = UDim.new(0, 9),
+			Parent = toast,
+		})
+
+		local toastTitle = label(toast, titleText, 11, THEME.text, Enum.Font.GothamBold)
+		toastTitle.AutomaticSize = Enum.AutomaticSize.Y
+		toastTitle.Size = UDim2.new(1, 0, 0, 14)
+		toastTitle.TextTransparency = 1
+		toastTitle.ZIndex = 32
+
+		local toastDetail = label(toast, detailText, 10, THEME.muted, Enum.Font.GothamMedium)
+		toastDetail.AutomaticSize = Enum.AutomaticSize.Y
+		toastDetail.Position = UDim2.new(0, 0, 0, 16)
+		toastDetail.Size = UDim2.new(1, 0, 0, 12)
+		toastDetail.TextTransparency = 1
+		toastDetail.ZIndex = 32
+
+		tween(toast, 0.18, {
+			BackgroundTransparency = 0,
+			Position = UDim2.new(0, 0, 0, 0),
+		})
+		tween(toastTitle, 0.18, { TextTransparency = 0 })
+		tween(toastDetail, 0.18, { TextTransparency = 0 })
+
+		task.delay(1.75, function()
+			if not toast or not toast.Parent then
+				return
+			end
+			tween(toast, 0.18, {
+				BackgroundTransparency = 1,
+				Position = UDim2.new(0, 24, 0, 0),
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			tween(toastTitle, 0.18, { TextTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			tween(toastDetail, 0.18, { TextTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+			task.delay(0.22, function()
+				if toast then
+					toast:Destroy()
+				end
+			end)
+		end)
+	end
+
+	local loader = create("Frame", {
+		BackgroundColor3 = THEME.window,
+		BackgroundTransparency = 0,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 1, 0),
+		ZIndex = 20,
+		Parent = panel,
+	})
+	corner(loader, 8)
+
+	local loaderAccent = create("Frame", {
+		BackgroundColor3 = THEME.accent,
+		BorderSizePixel = 0,
+		Position = UDim2.new(0, 0, 0, 0),
+		Size = UDim2.new(0, 0, 0, 3),
+		ZIndex = 21,
+		Parent = loader,
+	})
+
+	local loaderTitle = label(loader, "0xVyrs Tycoon", 15, THEME.text, Enum.Font.GothamBlack, Enum.TextXAlignment.Center)
+	loaderTitle.AnchorPoint = Vector2.new(0.5, 0.5)
+	loaderTitle.Position = UDim2.new(0.5, 0, 0.5, -10)
+	loaderTitle.Size = UDim2.new(1, -24, 0, 22)
+	loaderTitle.ZIndex = 21
+
+	local loaderSub = label(loader, "loading safe automation", 9, THEME.accent, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+	loaderSub.AnchorPoint = Vector2.new(0.5, 0.5)
+	loaderSub.Position = UDim2.new(0.5, 0, 0.5, 12)
+	loaderSub.Size = UDim2.new(1, -24, 0, 14)
+	loaderSub.ZIndex = 21
 
 	local body = create("Frame", {
 		BackgroundTransparency = 1,
@@ -192,6 +314,7 @@ return function(context)
 			if callbacks[key] then
 				callbacks[key](CONFIG[key])
 			end
+			showToast("Tycoon", string.format("%s %s", labelText, CONFIG[key] and "enabled" or "disabled"), CONFIG[key] and THEME.accent or THEME.muted)
 		end)
 	end
 
@@ -228,6 +351,7 @@ return function(context)
 			if cycleCallbacks[key] then
 				cycleCallbacks[key](CONFIG[key])
 			end
+			showToast("Tycoon", string.format("%s set to %s", labelText, tostring(CONFIG[key])), THEME.accent)
 		end)
 	end
 
@@ -300,6 +424,31 @@ return function(context)
 			stateBadge.TextColor3 = THEME.focus
 		end
 	end
+
+	tween(panel, 0.24, {
+		BackgroundTransparency = 0,
+		Position = UDim2.new(0, CONFIG.uiOffsetX, 0, CONFIG.uiOffsetY),
+	})
+	tween(header, 0.24, {
+		BackgroundTransparency = 0,
+	})
+	tween(loaderAccent, 0.42, {
+		Size = UDim2.new(1, 0, 0, 3),
+	})
+	task.delay(0.48, function()
+		if not loader or not loader.Parent then
+			return
+		end
+		tween(loaderTitle, 0.18, { TextTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		tween(loaderSub, 0.18, { TextTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		tween(loader, 0.22, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		task.delay(0.24, function()
+			if loader then
+				loader:Destroy()
+			end
+			showToast("Tycoon Core", "Loaded with automation disabled", THEME.accent)
+		end)
+	end)
 
 	return {
 		update = update,
