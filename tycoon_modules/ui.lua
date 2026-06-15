@@ -3,6 +3,11 @@ return function(context)
 	local CoreGui = context.CoreGui
 
 	local callbacks = {}
+	local cycleCallbacks = {}
+	local CYCLES = {
+		buyMode = { "Nearest", "Cheapest", "Value" },
+		collectMode = { "Nearby", "Tycoon", "Collectors" },
+	}
 
 	local function create(className, props)
 		local instance = Instance.new(className)
@@ -43,7 +48,7 @@ return function(context)
 		BackgroundColor3 = Color3.fromRGB(9, 16, 28),
 		BorderSizePixel = 0,
 		Position = UDim2.new(0, CONFIG.uiOffsetX, 0, CONFIG.uiOffsetY),
-		Size = UDim2.new(0, 278, 0, 286),
+		Size = UDim2.new(0, 314, 0, 430),
 		Parent = gui,
 	})
 	corner(panel, 8)
@@ -82,9 +87,15 @@ return function(context)
 		Parent = panel,
 	})
 
-	local body = create("Frame", {
+	local body = create("ScrollingFrame", {
+		Active = true,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
 		Position = UDim2.new(0, 12, 0, 54),
+		ScrollBarImageColor3 = Color3.fromRGB(72, 164, 255),
+		ScrollBarThickness = 3,
 		Size = UDim2.new(1, -24, 1, -66),
 		Parent = panel,
 	})
@@ -97,6 +108,7 @@ return function(context)
 
 	local labels = {}
 	local toggles = {}
+	local cycleButtons = {}
 
 	local function row(labelText)
 		local frame = create("Frame", {
@@ -175,16 +187,73 @@ return function(context)
 		end)
 	end
 
+	local function cycleRow(key, labelText)
+		local frame = row(labelText)
+		create("TextLabel", {
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamBold,
+			Position = UDim2.new(0, 9, 0, 0),
+			Size = UDim2.new(1, -108, 1, 0),
+			Text = labelText,
+			TextColor3 = Color3.fromRGB(118, 164, 218),
+			TextSize = 10,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Parent = frame,
+		})
+		local button = create("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			AutoButtonColor = false,
+			BackgroundColor3 = Color3.fromRGB(31, 42, 58),
+			BorderSizePixel = 0,
+			Font = Enum.Font.GothamBlack,
+			Position = UDim2.new(1, -8, 0.5, 0),
+			Size = UDim2.new(0, 92, 0, 16),
+			Text = tostring(CONFIG[key]),
+			TextColor3 = Color3.fromRGB(228, 244, 255),
+			TextSize = 8,
+			Parent = frame,
+		})
+		corner(button, 999)
+		cycleButtons[key] = button
+		button.MouseButton1Click:Connect(function()
+			local values = CYCLES[key] or {}
+			local nextIndex = 1
+			for index, value in ipairs(values) do
+				if value == CONFIG[key] then
+					nextIndex = (index % #values) + 1
+					break
+				end
+			end
+			CONFIG[key] = values[nextIndex] or CONFIG[key]
+			button.Text = tostring(CONFIG[key])
+			if cycleCallbacks[key] then
+				cycleCallbacks[key](CONFIG[key])
+			end
+		end)
+	end
+
 	toggleRow("enabled", "ENABLED")
 	toggleRow("autoCollect", "AUTO COLLECT")
+	toggleRow("autoBuy", "AUTO BUY")
 	toggleRow("highlightAffordable", "HIGHLIGHT UPGRADES")
+	toggleRow("showLabels", "BUTTON LABELS")
 	toggleRow("showWaypoint", "WAYPOINT")
+	toggleRow("autoLoadGamePreset", "PLACE PRESET")
+	cycleRow("buyMode", "BUY MODE")
+	cycleRow("collectMode", "COLLECT MODE")
 	statRow("base", "BASE")
 	statRow("cash", "CASH")
 	statRow("income", "INCOME / MIN")
 	statRow("buttons", "AFFORDABLE")
+	statRow("locked", "LOCKED")
+	statRow("progress", "PROGRESS")
 	statRow("nearest", "NEAREST")
+	statRow("cheapest", "CHEAPEST")
+	statRow("value", "BEST VALUE")
+	statRow("nextLocked", "NEXT LOCKED")
 	statRow("collected", "COLLECT TOUCHES")
+	statRow("bought", "BUY TOUCHES")
+	statRow("debug", "SCANNER")
 
 	local dragging = false
 	local dragStart
@@ -247,15 +316,25 @@ return function(context)
 		labels.base.Text = trim(data.rootName or "Scanning", 18)
 		labels.cash.Text = tostring(stats.cash or 0)
 		labels.income.Text = tostring(stats.cashPerMinute or 0)
-		labels.buttons.Text = tostring(affordable)
+		labels.buttons.Text = tostring(data.affordableCount or affordable)
+		labels.locked.Text = tostring(data.lockedCount or 0)
+		labels.progress.Text = string.format("%d%%", data.progressPercent or 0)
 		labels.nearest.Text = payload.nearest and trim(payload.nearest.name, 18) or "None"
+		labels.cheapest.Text = payload.cheapest and trim(payload.cheapest.name, 18) or "None"
+		labels.value.Text = payload.bestValue and trim(payload.bestValue.name, 18) or "None"
+		labels.nextLocked.Text = payload.nextLocked and trim(payload.nextLocked.name, 18) or "None"
 		labels.collected.Text = tostring(payload.collected or 0)
+		labels.bought.Text = tostring(payload.bought or 0)
+		labels.debug.Text = trim(data.debug or "Scanning", 28)
 	end
 
 	return {
 		update = update,
 		onToggle = function(key, callback)
 			callbacks[key] = callback
+		end,
+		onCycle = function(key, callback)
+			cycleCallbacks[key] = callback
 		end,
 		destroy = function()
 			gui:Destroy()

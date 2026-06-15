@@ -22,11 +22,17 @@ local CONFIG = {
 	version = "0.1.0",
 	enabled = true,
 	autoCollect = false,
+	autoBuy = false,
+	autoLoadGamePreset = true,
 	highlightAffordable = true,
+	showLabels = true,
 	showWaypoint = true,
+	buyMode = "Nearest",
+	collectMode = "Nearby",
 	collectRange = 26,
 	scanInterval = 2,
 	collectInterval = 0.45,
+	buyInterval = 1.1,
 	maxButtons = 80,
 	maxDrops = 120,
 	uiOffsetX = 24,
@@ -59,7 +65,12 @@ local function loadSettings()
 		return
 	end
 
-	for key, value in pairs(decoded) do
+	local source = decoded
+	if decoded.placeConfigs and decoded.placeConfigs[tostring(game.PlaceId)] and decoded.autoLoadGamePreset ~= false then
+		source = decoded.placeConfigs[tostring(game.PlaceId)]
+	end
+
+	for key, value in pairs(source) do
 		if CONFIG[key] ~= nil and key ~= "version" then
 			CONFIG[key] = value
 		end
@@ -72,9 +83,24 @@ local function saveSettings()
 	end
 
 	local payload = {}
+	if isfile(SETTINGS_FILE) then
+		pcall(function()
+			local existing = HttpService:JSONDecode(readfile(SETTINGS_FILE))
+			if type(existing) == "table" then
+				payload = existing
+			end
+		end)
+	end
 	for key, value in pairs(CONFIG) do
 		if key ~= "version" then
 			payload[key] = value
+		end
+	end
+	payload.placeConfigs = payload.placeConfigs or {}
+	payload.placeConfigs[tostring(game.PlaceId)] = {}
+	for key, value in pairs(CONFIG) do
+		if key ~= "version" and key ~= "placeConfigs" then
+			payload.placeConfigs[tostring(game.PlaceId)][key] = value
 		end
 	end
 
@@ -236,14 +262,21 @@ end
 
 if type(scanner.scan) ~= "function"
 	or type(collector.collectNearby) ~= "function"
+	or type(collector.buyButton) ~= "function"
 	or type(upgrades.getNearestAffordable) ~= "function"
 	or type(upgrades.getCheapestAffordable) ~= "function"
+	or type(upgrades.getMostExpensiveAffordable) ~= "function"
+	or type(upgrades.getNextLocked) ~= "function"
+	or type(upgrades.choosePurchase) ~= "function"
 	or type(upgrades.render) ~= "function"
+	or type(upgrades.renderLabels) ~= "function"
 	or type(upgrades.clear) ~= "function"
+	or type(upgrades.clearLabels) ~= "function"
 	or type(upgrades.updateWaypoint) ~= "function"
 	or type(upgrades.hideWaypoint) ~= "function"
 	or type(ui.update) ~= "function"
 	or type(ui.onToggle) ~= "function"
+	or type(ui.onCycle) ~= "function"
 	or type(stats.update) ~= "function"
 	or type(stats.get) ~= "function" then
 	error("[0xVyrs Tycoon] Module contract failed")
@@ -251,10 +284,14 @@ end
 local runtime = {
 	lastScan = 0,
 	lastCollect = 0,
+	lastBuy = 0,
 	data = nil,
 	nearest = nil,
 	cheapest = nil,
+	bestValue = nil,
+	nextLocked = nil,
 	collected = 0,
+	bought = 0,
 }
 
 ui.onToggle("enabled", function(value)
@@ -265,17 +302,38 @@ ui.onToggle("autoCollect", function(value)
 	CONFIG.autoCollect = value
 	saveSettings()
 end)
+ui.onToggle("autoBuy", function(value)
+	CONFIG.autoBuy = value
+	saveSettings()
+end)
 ui.onToggle("highlightAffordable", function(value)
 	CONFIG.highlightAffordable = value
+	saveSettings()
+end)
+ui.onToggle("showLabels", function(value)
+	CONFIG.showLabels = value
 	saveSettings()
 end)
 ui.onToggle("showWaypoint", function(value)
 	CONFIG.showWaypoint = value
 	saveSettings()
 end)
+ui.onToggle("autoLoadGamePreset", function(value)
+	CONFIG.autoLoadGamePreset = value
+	saveSettings()
+end)
+ui.onCycle("buyMode", function(value)
+	CONFIG.buyMode = value
+	saveSettings()
+end)
+ui.onCycle("collectMode", function(value)
+	CONFIG.collectMode = value
+	saveSettings()
+end)
 
 local function cleanup()
 	upgrades.clear()
+	upgrades.clearLabels()
 	if ui and ui.destroy then
 		ui.destroy()
 	end
@@ -299,19 +357,31 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		runtime.data = runSafe("scan", scanner.scan, context) or runtime.data
 		runtime.nearest = runSafe("nearest upgrade", upgrades.getNearestAffordable, runtime.data, getLocalRoot())
 		runtime.cheapest = runSafe("cheapest upgrade", upgrades.getCheapestAffordable, runtime.data)
+		runtime.bestValue = runSafe("best value upgrade", upgrades.getMostExpensiveAffordable, runtime.data)
+		runtime.nextLocked = runSafe("next locked upgrade", upgrades.getNextLocked, runtime.data)
 	end
 
 	if CONFIG.enabled and runtime.data then
+		runtime.data.showLabels = CONFIG.showLabels
 		if CONFIG.highlightAffordable then
 			runSafe("highlight render", upgrades.render, runtime.data, runtime.nearest)
 		else
 			runSafe("highlight clear", upgrades.clear)
 		end
+		runSafe("label render", upgrades.renderLabels, runtime.data, runtime.nearest)
 
 		if CONFIG.showWaypoint then
-			runSafe("waypoint update", upgrades.updateWaypoint, runtime.nearest)
+			runSafe("waypoint update", upgrades.updateWaypoint, runtime.nearest or runtime.cheapest)
 		else
 			runSafe("waypoint hide", upgrades.hideWaypoint)
+		end
+
+		if CONFIG.autoBuy and now - runtime.lastBuy >= CONFIG.buyInterval then
+			runtime.lastBuy = now
+			local target = upgrades.choosePurchase(runtime.data, getLocalRoot(), CONFIG.buyMode)
+			if target and collector.buyButton(context, target) then
+				runtime.bought = runtime.bought + 1
+			end
 		end
 
 		if CONFIG.autoCollect and now - runtime.lastCollect >= CONFIG.collectInterval then
@@ -320,6 +390,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		end
 	else
 		runSafe("highlight clear", upgrades.clear)
+		runSafe("label clear", upgrades.clearLabels)
 		runSafe("waypoint hide", upgrades.hideWaypoint)
 	end
 
@@ -327,8 +398,11 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		data = runtime.data,
 		nearest = runtime.nearest,
 		cheapest = runtime.cheapest,
+		bestValue = runtime.bestValue,
+		nextLocked = runtime.nextLocked,
 		stats = runSafe("stats get", stats.get) or {},
 		collected = runtime.collected,
+		bought = runtime.bought,
 	})
 end)
 

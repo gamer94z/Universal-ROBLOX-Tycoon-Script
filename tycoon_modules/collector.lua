@@ -31,7 +31,9 @@ return function()
 		local collected = 0
 		for _, drop in ipairs(data.drops) do
 			local part = drop.part
-			if part and part.Parent and (part.Position - root.Position).Magnitude <= context.CONFIG.collectRange then
+			local inRange = context.CONFIG.collectMode == "Tycoon" or (part and (part.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
+			local modeAllows = context.CONFIG.collectMode ~= "Collectors" or tostring(drop.name or ""):lower():find("collect", 1, true) ~= nil
+			if part and part.Parent and inRange and modeAllows then
 				if touch(root, part) then
 					collected = collected + 1
 				end
@@ -41,7 +43,16 @@ return function()
 		return collected
 	end
 
+	local function buyButton(context, button)
+		if not button or not button.part then
+			return false
+		end
+		local root = context.getLocalRoot()
+		return touch(root, button.part)
+	end
+
 	return {
 		collectNearby = collectNearby,
+		buyButton = buyButton,
 	}
 end

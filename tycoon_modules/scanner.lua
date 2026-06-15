@@ -127,6 +127,7 @@ return function()
 					part = getTouchPart(descendant),
 					price = price,
 					affordable = price == nil or price <= cash,
+					locked = price ~= nil and price > cash,
 					name = descendant.Name,
 				})
 			elseif isDrop and hasTouchInterest(descendant) and #data.drops < context.CONFIG.maxDrops then
@@ -144,10 +145,13 @@ return function()
 		for _, child in ipairs(workspace:GetChildren()) do
 			if child:IsA("Model") or child:IsA("Folder") then
 				local score = getModelScore(child)
-				if score >= 8 or ownerMatches(context, child) then
+				local owned = ownerMatches(context, child)
+				if score >= 8 or owned then
 					table.insert(roots, {
 						root = child,
-						score = ownerMatches(context, child) and (score + 100) or score,
+						score = owned and (score + 100) or score,
+						rawScore = score,
+						ownerMatch = owned,
 					})
 				end
 			end
@@ -160,19 +164,53 @@ return function()
 
 	local function scan(context)
 		local roots = findTycoonRoots(context)
+		local selected = roots[1]
 		local data = {
-			root = roots[1] and roots[1].root or workspace,
-			rootName = roots[1] and roots[1].root.Name or "Workspace",
+			root = selected and selected.root or workspace,
+			rootName = selected and selected.root.Name or "Workspace",
+			confidence = selected and math.clamp(selected.score, 0, 100) or 0,
+			rootScore = selected and selected.rawScore or 0,
+			ownerMatch = selected and selected.ownerMatch or false,
 			buttons = {},
 			drops = {},
 			cash = getCash(context),
-			owned = roots[1] ~= nil,
+			owned = selected ~= nil,
 		}
 
 		collectCandidates(data.root, data, context)
 		if #data.buttons == 0 and data.root ~= workspace then
 			collectCandidates(workspace, data, context)
 		end
+
+		local affordable = 0
+		local locked = 0
+		for _, button in ipairs(data.buttons) do
+			if button.affordable then
+				affordable = affordable + 1
+			elseif button.locked then
+				locked = locked + 1
+			end
+		end
+		table.sort(data.buttons, function(a, b)
+			local aPrice = a.price or 0
+			local bPrice = b.price or 0
+			if a.affordable ~= b.affordable then
+				return a.affordable
+			end
+			return aPrice < bPrice
+		end)
+		data.affordableCount = affordable
+		data.lockedCount = locked
+		data.totalButtons = #data.buttons
+		data.progressPercent = #data.buttons > 0 and math.floor((affordable / #data.buttons) * 100 + 0.5) or 0
+		data.debug = string.format(
+			"%s | score %d | owner %s | buttons %d | drops %d",
+			data.rootName,
+			data.rootScore,
+			data.ownerMatch and "yes" or "no",
+			#data.buttons,
+			#data.drops
+		)
 
 		return data
 	end

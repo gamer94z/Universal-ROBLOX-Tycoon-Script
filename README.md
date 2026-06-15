@@ -12,10 +12,14 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/gamer94z/Universal-RO
 
 - Scans for tycoon-like bases, buttons, collectors, and cash drops.
 - Detects the local player's likely tycoon/base.
+- Shows scanner confidence, owner match, button count, drop count, and progress.
 - Highlights affordable upgrade buttons.
-- Shows nearest and cheapest upgrade.
+- Adds floating labels over detected buttons with price/next markers.
+- Shows nearest, cheapest, best-value, and next locked upgrade.
+- Optional auto-buy with nearest, cheapest, or value mode.
+- Optional collection modes: nearby, whole tycoon, or collectors only.
 - Tracks estimated cash per minute.
-- Optional nearby touch collection for drops/collectors.
+- Saves per-place presets for tycoon-specific settings.
 - Compact draggable UI.
 
 ## Notes

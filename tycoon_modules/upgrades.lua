@@ -1,5 +1,6 @@
 return function()
 	local highlights = {}
+	local labels = {}
 	local waypointGui
 
 	local function clear()
@@ -8,6 +9,15 @@ return function()
 				highlight:Destroy()
 			end
 			highlights[object] = nil
+		end
+	end
+
+	local function clearLabels()
+		for object, label in pairs(labels) do
+			if label then
+				label:Destroy()
+			end
+			labels[object] = nil
 		end
 	end
 
@@ -62,6 +72,50 @@ return function()
 		return best
 	end
 
+	local function getMostExpensiveAffordable(data)
+		if not data or not data.buttons then
+			return nil
+		end
+
+		local best
+		local bestPrice = -math.huge
+		for _, button in ipairs(data.buttons) do
+			if button.affordable then
+				local price = button.price or 0
+				if price > bestPrice then
+					bestPrice = price
+					best = button
+				end
+			end
+		end
+		return best
+	end
+
+	local function getNextLocked(data)
+		if not data or not data.buttons then
+			return nil
+		end
+
+		local best
+		local bestPrice = math.huge
+		for _, button in ipairs(data.buttons) do
+			if button.locked and button.price and button.price < bestPrice then
+				bestPrice = button.price
+				best = button
+			end
+		end
+		return best
+	end
+
+	local function choosePurchase(data, root, mode)
+		if mode == "Cheapest" then
+			return getCheapestAffordable(data)
+		elseif mode == "Value" then
+			return getMostExpensiveAffordable(data)
+		end
+		return getNearestAffordable(data, root)
+	end
+
 	local function render(data, nearest)
 		if not data or not data.buttons then
 			clear()
@@ -93,6 +147,72 @@ return function()
 			if not seen[object] then
 				highlight:Destroy()
 				highlights[object] = nil
+			end
+		end
+	end
+
+	local function makeLabel(button)
+		local gui = Instance.new("BillboardGui")
+		gui.Name = "TycoonButtonLabel"
+		gui.AlwaysOnTop = true
+		gui.Size = UDim2.new(0, 132, 0, 30)
+		gui.StudsOffset = Vector3.new(0, 3, 0)
+
+		local label = Instance.new("TextLabel")
+		label.Name = "Label"
+		label.BackgroundColor3 = Color3.fromRGB(6, 14, 26)
+		label.BackgroundTransparency = 0.18
+		label.BorderSizePixel = 0
+		label.Font = Enum.Font.GothamBold
+		label.Size = UDim2.new(1, 0, 1, 0)
+		label.TextColor3 = Color3.fromRGB(205, 232, 255)
+		label.TextSize = 11
+		label.Parent = gui
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 6)
+		corner.Parent = label
+
+		gui.Adornee = button.part
+		gui.Parent = button.part
+		return gui
+	end
+
+	local function renderLabels(data, nearest)
+		if not data or not data.buttons or data.showLabels == false then
+			clearLabels()
+			return
+		end
+
+		local seen = {}
+		for index, button in ipairs(data.buttons) do
+			if index > 24 then
+				break
+			end
+			if button.part and button.part.Parent then
+				seen[button.object] = true
+				local gui = labels[button.object]
+				if not gui then
+					gui = makeLabel(button)
+					labels[button.object] = gui
+				end
+				gui.Enabled = true
+				gui.Adornee = button.part
+				gui.Parent = button.part
+				local label = gui:FindFirstChild("Label")
+				if label then
+					local tag = nearest and nearest.object == button.object and "NEXT " or ""
+					local price = button.price and tostring(button.price) or "?"
+					label.Text = string.format("%s$%s", tag, price)
+					label.TextColor3 = button.affordable and Color3.fromRGB(180, 232, 255) or Color3.fromRGB(255, 154, 154)
+				end
+			end
+		end
+
+		for object, gui in pairs(labels) do
+			if not seen[object] then
+				gui:Destroy()
+				labels[object] = nil
 			end
 		end
 	end
@@ -137,10 +257,15 @@ return function()
 
 	return {
 		clear = clear,
+		clearLabels = clearLabels,
 		hideWaypoint = hideWaypoint,
 		getNearestAffordable = getNearestAffordable,
 		getCheapestAffordable = getCheapestAffordable,
+		getMostExpensiveAffordable = getMostExpensiveAffordable,
+		getNextLocked = getNextLocked,
+		choosePurchase = choosePurchase,
 		render = render,
+		renderLabels = renderLabels,
 		updateWaypoint = updateWaypoint,
 	}
 end
