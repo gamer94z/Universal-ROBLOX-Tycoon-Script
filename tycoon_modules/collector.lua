@@ -18,9 +18,33 @@ return function()
 
 	local purchaseFailures = setmetatable({}, { __mode = "k" })
 	local collectCooldowns = setmetatable({}, { __mode = "k" })
+	local collectStates = setmetatable({}, { __mode = "k" })
 	local collectCursor = 1
 	local MAX_COLLECT_PER_PASS = 6
-	local COLLECT_TARGET_COOLDOWN = 0.45
+	local COLLECT_TARGET_COOLDOWN = 0.35
+	local COLLECTION_ROOT_FALLBACK_MISSES = 3
+	local COLLECTION_ROOT_FALLBACK_COOLDOWN = 1.25
+	local COLLECTION_ACTOR_NAMES = {
+		"LeftFoot",
+		"RightFoot",
+		"LeftLowerLeg",
+		"RightLowerLeg",
+		"Left Leg",
+		"Right Leg",
+		"LowerTorso",
+		"Torso",
+		"Head",
+	}
+
+	local diagnostics = {
+		attempts = 0,
+		activations = 0,
+		cashConfirmed = 0,
+		actorRetries = 0,
+		rootFallbacks = 0,
+		staleRefreshes = 0,
+		failed = 0,
+	}
 
 	local function lower(value)
 		return tostring(value or ""):lower()
@@ -181,41 +205,28 @@ return function()
 		end)
 	end
 
-	local function getCollectionTouchActor(context, root)
+	local function getCollectionTouchActors(context, root)
+		local actors = {}
+		local seen = {}
 		local character = context.LOCAL_PLAYER and context.LOCAL_PLAYER.Character
 		if not character then
-			return root
+			return actors
 		end
 
-		-- Prefer a non-root character limb. Touch handlers usually only care that
-		-- the touching part belongs to the player's character, while avoiding the
-		-- HumanoidRootPart prevents touch simulation from disturbing movement.
-		local preferredNames = {
-			"LeftFoot",
-			"RightFoot",
-			"LeftLowerLeg",
-			"RightLowerLeg",
-			"Left Leg",
-			"Right Leg",
-			"LowerTorso",
-			"Torso",
-			"Head",
-		}
-
-		for _, name in ipairs(preferredNames) do
-			local part = character:FindFirstChild(name)
-			if part and part:IsA("BasePart") and part ~= root then
-				return part
+		local function add(part)
+			if part and part.Parent and part:IsA("BasePart") and part ~= root and not seen[part] then
+				seen[part] = true
+				table.insert(actors, part)
 			end
 		end
 
+		for _, name in ipairs(COLLECTION_ACTOR_NAMES) do
+			add(character:FindFirstChild(name))
+		end
 		for _, child in ipairs(character:GetChildren()) do
-			if child:IsA("BasePart") and child ~= root then
-				return child
-			end
+			add(child)
 		end
-
-		return root
+		return actors
 	end
 
 	local function touch(actor, part, suppressCollision)
@@ -287,7 +298,7 @@ return function()
 		if entry.touchPart then
 			if allowTeleport and context.CONFIG.touchMode == "Teleport" then
 				return teleportTouch(root, entry.touchPart)
-		end
+			end
 
 			local actor = collectionActor or root
 			return touch(actor, entry.touchPart, collectionActor ~= nil)
@@ -312,6 +323,165 @@ return function()
 		return (entry.prompt and entry.prompt.Parent)
 			or (entry.clickDetector and entry.clickDetector.Parent)
 			or (entry.touchPart and entry.touchPart.Parent)
+	end
+
+	local function refreshCollectionInteraction(entry)
+		if not entry or not entry.object or not entry.object.Parent then
+			return false
+		end
+		if entryHasLiveActivation(entry) then
+			return true
+		end
+
+		entry.prompt = nil
+		entry.clickDetector = nil
+		entry.touchPart = nil
+		local object = entry.object
+
+		local function inspect(instance)
+			if instance:IsA("ProximityPrompt") and not entry.prompt then
+				entry.prompt = instance
+			elseif instance:IsA("ClickDetector") and not entry.clickDetector then
+				entry.clickDetector = instance
+			elseif instance:IsA("TouchTransmitter") and not entry.touchPart then
+				local parent = instance.Parent
+				if parent and parent:IsA("BasePart") then
+					entry.touchPart = parent
+				end
+			end
+		end
+
+		inspect(object)
+		if object:IsA("BasePart") then
+			local transmitter = object:FindFirstChildOfClass("TouchTransmitter")
+			if transmitter then entry.touchPart = object end
+		end
+
+		if not entryHasLiveActivation(entry) then
+			for _, descendant in ipairs(object:GetDescendants()) do
+				inspect(descendant)
+				if entry.prompt or entry.clickDetector or entry.touchPart then
+					break
+				end
+			end
+		end
+
+		if entryHasLiveActivation(entry) then
+			diagnostics.staleRefreshes = diagnostics.staleRefreshes + 1
+			return true
+		end
+		return false
+	end
+
+	local function getCollectionState(entry)
+		local key = entry and (entry.touchPart or entry.prompt or entry.clickDetector or entry.object)
+		if not key then return nil end
+		local state = collectStates[key]
+		if not state then
+			state = {
+				actorIndex = 1,
+				misses = 0,
+				lastRootFallback = -math.huge,
+			}
+			collectStates[key] = state
+		end
+		return state
+	end
+
+	local function cashIncreased(context, beforeCash)
+		if beforeCash == nil then return false end
+		local currentCash = tonumber(context.getCash())
+		return currentCash ~= nil and currentCash > beforeCash
+	end
+
+	local function activateCollectionEntry(context, root, entry)
+		if not refreshCollectionInteraction(entry) then
+			diagnostics.failed = diagnostics.failed + 1
+			return false
+		end
+
+		-- Prompts/clicks do not suffer from repeated touch-pair debouncing.
+		if entry.prompt and entry.prompt.Parent then
+			local ok = firePrompt(entry.prompt)
+			if ok then diagnostics.activations = diagnostics.activations + 1 end
+			return ok
+		end
+		if entry.clickDetector and entry.clickDetector.Parent then
+			local ok = fireClick(entry.clickDetector)
+			if ok then diagnostics.activations = diagnostics.activations + 1 end
+			return ok
+		end
+
+		local target = entry.touchPart
+		if not target or not target.Parent then
+			diagnostics.failed = diagnostics.failed + 1
+			return false
+		end
+
+		local state = getCollectionState(entry)
+		local actors = getCollectionTouchActors(context, root)
+		local beforeCash = tonumber(context.getCash())
+		local anyTouch = false
+
+		-- Rotate the character part used for each collection. Some tycoon touch
+		-- debounces stop responding to a permanently repeated actor/target pair.
+		if #actors > 0 then
+			if state.actorIndex > #actors then state.actorIndex = 1 end
+			local actor = actors[state.actorIndex]
+			state.actorIndex = (state.actorIndex % #actors) + 1
+			anyTouch = touch(actor, target, true)
+			if anyTouch then diagnostics.activations = diagnostics.activations + 1 end
+			waitStep(0.035)
+
+			if cashIncreased(context, beforeCash) then
+				state.misses = 0
+				diagnostics.cashConfirmed = diagnostics.cashConfirmed + 1
+				return true
+			end
+
+			-- A second, different limb creates a fresh touch pair without moving the
+			-- HumanoidRootPart or the player's CFrame.
+			if #actors > 1 then
+				diagnostics.actorRetries = diagnostics.actorRetries + 1
+				if state.actorIndex > #actors then state.actorIndex = 1 end
+				local retryActor = actors[state.actorIndex]
+				state.actorIndex = (state.actorIndex % #actors) + 1
+				local retried = touch(retryActor, target, true)
+				anyTouch = retried or anyTouch
+				if retried then diagnostics.activations = diagnostics.activations + 1 end
+				waitStep(0.035)
+				if cashIncreased(context, beforeCash) then
+					state.misses = 0
+					diagnostics.cashConfirmed = diagnostics.cashConfirmed + 1
+					return true
+				end
+			end
+		end
+
+		state.misses = math.min(12, (state.misses or 0) + 1)
+
+		-- Last resort: send a direct root touch without teleporting or changing
+		-- root velocity. Collision is suppressed on the target to avoid the old
+		-- movement/nudge problem. This is intentionally not used every pass.
+		local now = os.clock()
+		if state.misses >= COLLECTION_ROOT_FALLBACK_MISSES
+			and now - state.lastRootFallback >= COLLECTION_ROOT_FALLBACK_COOLDOWN
+			and root and root.Parent then
+			state.lastRootFallback = now
+			diagnostics.rootFallbacks = diagnostics.rootFallbacks + 1
+			local fallback = touch(root, target, true)
+			anyTouch = fallback or anyTouch
+			if fallback then diagnostics.activations = diagnostics.activations + 1 end
+			waitStep(0.04)
+			if cashIncreased(context, beforeCash) then
+				state.misses = 0
+				diagnostics.cashConfirmed = diagnostics.cashConfirmed + 1
+				return true
+			end
+		end
+
+		if not anyTouch then diagnostics.failed = diagnostics.failed + 1 end
+		return anyTouch
 	end
 
 	local function capturePurchaseState(context, button)
@@ -380,7 +550,6 @@ return function()
 			return 0
 		end
 
-		local actor = getCollectionTouchActor(context, root)
 		local now = os.clock()
 		local total = #data.drops
 		if collectCursor > total then
@@ -397,6 +566,7 @@ return function()
 			checked = checked + 1
 
 			if drop and drop.object and drop.object.Parent then
+				refreshCollectionInteraction(drop)
 				local targetPart = drop.touchPart or drop.part
 				if not targetPart and drop.prompt and drop.prompt.Parent and drop.prompt.Parent:IsA("BasePart") then
 					targetPart = drop.prompt.Parent
@@ -404,19 +574,22 @@ return function()
 					targetPart = drop.clickDetector.Parent
 				end
 
+				local targetAlive = targetPart == nil or targetPart.Parent ~= nil
 				local inRange = context.CONFIG.collectMode == "Tycoon"
-					or (targetPart and (targetPart.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
+					or (targetPart and targetAlive and (targetPart.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
 				local modeAllows = context.CONFIG.collectMode ~= "Collectors"
 					or lower(drop.name):find("collect", 1, true) ~= nil
-				local cooldownUntil = collectCooldowns[drop.object] or 0
+				local cooldownKey = drop.touchPart or drop.prompt or drop.clickDetector or drop.object
+				local cooldownUntil = collectCooldowns[cooldownKey] or 0
 
 				if inRange and modeAllows and now >= cooldownUntil then
 					activated = activated + 1
-					if activateEntry(context, root, drop, false, actor) then
+					diagnostics.attempts = diagnostics.attempts + 1
+					if activateCollectionEntry(context, root, drop) then
 						collected = collected + 1
-						collectCooldowns[drop.object] = now + COLLECT_TARGET_COOLDOWN
+						collectCooldowns[cooldownKey] = now + COLLECT_TARGET_COOLDOWN
 					else
-						collectCooldowns[drop.object] = now + 0.2
+						collectCooldowns[cooldownKey] = now + 0.15
 					end
 				end
 			end
@@ -466,8 +639,21 @@ return function()
 		return false
 	end
 
+	local function getStatus()
+		return {
+			attempts = diagnostics.attempts,
+			activations = diagnostics.activations,
+			cashConfirmed = diagnostics.cashConfirmed,
+			actorRetries = diagnostics.actorRetries,
+			rootFallbacks = diagnostics.rootFallbacks,
+			staleRefreshes = diagnostics.staleRefreshes,
+			failed = diagnostics.failed,
+		}
+	end
+
 	return {
 		collectNearby = collectNearby,
 		buyButton = buyButton,
+		getStatus = getStatus,
 	}
 end
