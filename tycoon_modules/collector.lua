@@ -44,6 +44,7 @@ return function()
 		rootFallbacks = 0,
 		staleRefreshes = 0,
 		failed = 0,
+		unaffordableSkips = 0,
 	}
 
 	local function lower(value)
@@ -296,7 +297,11 @@ return function()
 			return true
 		end
 		if entry.touchPart then
-			if allowTeleport and context.CONFIG.touchMode == "Teleport" then
+			-- The autonomous runtime is deliberately virtual-only. The old Teleport
+			-- mode remains available to the stable/manual runtime, but an autonomous
+			-- purchase must never move the player's HumanoidRootPart.
+			local autonomous = context.CONFIG.autopilotEnabled ~= nil
+			if allowTeleport and not autonomous and context.CONFIG.touchMode == "Teleport" then
 				return teleportTouch(root, entry.touchPart)
 			end
 
@@ -400,7 +405,6 @@ return function()
 			return false
 		end
 
-		-- Prompts/clicks do not suffer from repeated touch-pair debouncing.
 		if entry.prompt and entry.prompt.Parent then
 			local ok = firePrompt(entry.prompt)
 			if ok then diagnostics.activations = diagnostics.activations + 1 end
@@ -423,8 +427,6 @@ return function()
 		local beforeCash = tonumber(context.getCash())
 		local anyTouch = false
 
-		-- Rotate the character part used for each collection. Some tycoon touch
-		-- debounces stop responding to a permanently repeated actor/target pair.
 		if #actors > 0 then
 			if state.actorIndex > #actors then state.actorIndex = 1 end
 			local actor = actors[state.actorIndex]
@@ -439,8 +441,6 @@ return function()
 				return true
 			end
 
-			-- A second, different limb creates a fresh touch pair without moving the
-			-- HumanoidRootPart or the player's CFrame.
 			if #actors > 1 then
 				diagnostics.actorRetries = diagnostics.actorRetries + 1
 				if state.actorIndex > #actors then state.actorIndex = 1 end
@@ -459,10 +459,6 @@ return function()
 		end
 
 		state.misses = math.min(12, (state.misses or 0) + 1)
-
-		-- Last resort: send a direct root touch without teleporting or changing
-		-- root velocity. Collision is suppressed on the target to avoid the old
-		-- movement/nudge problem. This is intentionally not used every pass.
 		local now = os.clock()
 		if state.misses >= COLLECTION_ROOT_FALLBACK_MISSES
 			and now - state.lastRootFallback >= COLLECTION_ROOT_FALLBACK_COOLDOWN
@@ -575,7 +571,11 @@ return function()
 				end
 
 				local targetAlive = targetPart == nil or targetPart.Parent ~= nil
-				local inRange = context.CONFIG.collectMode == "Tycoon"
+				-- Autonomous mode owns the whole verified plot, so collection should
+				-- not stop just because the player walked outside collectRange.
+				local autonomous = context.CONFIG.autopilotEnabled ~= nil
+				local inRange = autonomous
+					or context.CONFIG.collectMode == "Tycoon"
 					or (targetPart and targetAlive and (targetPart.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
 				local modeAllows = context.CONFIG.collectMode ~= "Collectors"
 					or lower(drop.name):find("collect", 1, true) ~= nil
@@ -615,6 +615,18 @@ return function()
 			return false
 		end
 
+		-- Re-check affordability at the exact moment of activation. The scanner
+		-- can be a fraction of a second behind after a previous purchase, which
+		-- used to let stale targets enter the Teleport path while cash was short.
+		local currentCash = tonumber(context.getCash())
+		local price = math.max(0, tonumber(button.price) or 0)
+		if currentCash ~= nil and price > currentCash then
+			button.affordable = false
+			button.locked = true
+			diagnostics.unaffordableSkips = diagnostics.unaffordableSkips + 1
+			return false
+		end
+
 		local root = context.getLocalRoot()
 		if not root then
 			return false
@@ -648,6 +660,7 @@ return function()
 			rootFallbacks = diagnostics.rootFallbacks,
 			staleRefreshes = diagnostics.staleRefreshes,
 			failed = diagnostics.failed,
+			unaffordableSkips = diagnostics.unaffordableSkips,
 		}
 	end
 
