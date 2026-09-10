@@ -1,5 +1,6 @@
 return function()
 	local function waitStep(seconds)
+		seconds = seconds or 0
 		if task and task.wait then
 			task.wait(seconds)
 		else
@@ -7,34 +8,53 @@ return function()
 		end
 	end
 
+	local function firePrompt(prompt)
+		if not prompt or not prompt.Parent or type(fireproximityprompt) ~= "function" then
+			return false
+		end
+		return pcall(function()
+			fireproximityprompt(prompt)
+		end)
+	end
+
+	local function fireClick(clickDetector)
+		if not clickDetector or not clickDetector.Parent or type(fireclickdetector) ~= "function" then
+			return false
+		end
+		return pcall(function()
+			fireclickdetector(clickDetector)
+		end)
+	end
+
 	local function touch(root, part)
-		if not root or not part or not part.Parent then
+		if not root or not root.Parent or not part or not part.Parent then
 			return false
 		end
 		if type(firetouchinterest) ~= "function" then
 			return false
 		end
-		pcall(function()
+
+		local ok = pcall(function()
 			firetouchinterest(root, part, 0)
 			waitStep()
 			firetouchinterest(root, part, 1)
 		end)
-		return true
+		return ok
 	end
 
 	local function teleportTouch(root, part)
-		if not root or not part or not part.Parent then
+		if not root or not root.Parent or not part or not part.Parent then
 			return false
 		end
 
 		local originalCFrame = root.CFrame
 		local targetCFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
-		local ok = pcall(function()
+		local moved = pcall(function()
 			root.CFrame = targetCFrame
 			root.AssemblyLinearVelocity = Vector3.zero
 			root.AssemblyAngularVelocity = Vector3.zero
 		end)
-		if not ok then
+		if not moved then
 			return touch(root, part)
 		end
 
@@ -53,47 +73,36 @@ return function()
 	end
 
 	local function activatePart(context, root, part)
+		if not part or not part.Parent then
+			return false
+		end
 		if context.CONFIG.touchMode == "Teleport" then
 			return teleportTouch(root, part)
 		end
 		return touch(root, part)
 	end
 
-	local function activateCollector(context, root, drop)
-		if not drop then
+	local function activateEntry(context, root, entry)
+		if not entry then
 			return false
 		end
 
-		if drop.part and activatePart(context, root, drop.part) then
+		-- Explicit interaction objects are more reliable than touching arbitrary parts.
+		if firePrompt(entry.prompt) then
 			return true
 		end
-
-		if drop.prompt and drop.prompt.Parent and type(fireproximityprompt) == "function" then
-			local ok = pcall(function()
-				fireproximityprompt(drop.prompt)
-			end)
-			if ok then
-				return true
-			end
+		if fireClick(entry.clickDetector) then
+			return true
 		end
-
-		if drop.clickDetector and drop.clickDetector.Parent and type(fireclickdetector) == "function" then
-			local ok = pcall(function()
-				fireclickdetector(drop.clickDetector)
-			end)
-			if ok then
-				return true
-			end
+		if entry.touchPart and activatePart(context, root, entry.touchPart) then
+			return true
 		end
 
 		return false
 	end
 
 	local function collectNearby(context, data)
-		if not data or not data.drops then
-			return 0
-		end
-		if not data.ownerMatch then
+		if not data or not data.drops or not data.ownerMatch then
 			return 0
 		end
 
@@ -104,18 +113,20 @@ return function()
 
 		local collected = 0
 		for _, drop in ipairs(data.drops) do
-			local targetPart = drop.part
+			local targetPart = drop.touchPart or drop.part
 			if not targetPart and drop.prompt and drop.prompt.Parent and drop.prompt.Parent:IsA("BasePart") then
 				targetPart = drop.prompt.Parent
 			elseif not targetPart and drop.clickDetector and drop.clickDetector.Parent and drop.clickDetector.Parent:IsA("BasePart") then
 				targetPart = drop.clickDetector.Parent
 			end
-			local inRange = context.CONFIG.collectMode == "Tycoon" or (targetPart and (targetPart.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
-			local modeAllows = context.CONFIG.collectMode ~= "Collectors" or tostring(drop.name or ""):lower():find("collect", 1, true) ~= nil
-			if targetPart and targetPart.Parent and inRange and modeAllows then
-				if activateCollector(context, root, drop) then
-					collected = collected + 1
-				end
+
+			local inRange = context.CONFIG.collectMode == "Tycoon"
+				or (targetPart and (targetPart.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
+			local modeAllows = context.CONFIG.collectMode ~= "Collectors"
+				or tostring(drop.name or ""):lower():find("collect", 1, true) ~= nil
+
+			if inRange and modeAllows and activateEntry(context, root, drop) then
+				collected = collected + 1
 			end
 		end
 
@@ -123,11 +134,14 @@ return function()
 	end
 
 	local function buyButton(context, button)
-		if not button or not button.part or button.paidPurchase or not button.ownerVerified then
+		if not button or button.paidPurchase or not button.ownerVerified then
 			return false
 		end
 		local root = context.getLocalRoot()
-		return activatePart(context, root, button.part)
+		if not root then
+			return false
+		end
+		return activateEntry(context, root, button)
 	end
 
 	return {
