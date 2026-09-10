@@ -6,7 +6,7 @@ local env = (type(getgenv) == "function" and getgenv())
 	or _G
 
 local STABLE_RUNTIME_COMMIT = "8c2e708a6faf50bc3bc7e7f038df2585d95ddc49"
-local HARDENING_MODULE_COMMIT = "6dde3745aba57b68998443cabc1815d0ea875762"
+local HARDENING_MODULE_COMMIT = "9cf3977bd4954337dd0f30d56d852fceb75ff95f"
 local repoBase = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/"
 
 env.__VYRS_TYCOON_MODULE_BASE_URL = repoBase .. HARDENING_MODULE_COMMIT .. "/tycoon_modules"
