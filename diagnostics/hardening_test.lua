@@ -52,23 +52,105 @@ if not patch(oldCash,newCash,1) then return end
 if not patch('if type%(readfile%) == "function" then\n\t\tfor _, path in ipairs%(%{',
     'if SHARED_ENV.__VYRS_TYCOON_USE_LOCAL_MODULES == true and type(readfile) == "function" then\n\t\tfor _, path in ipairs({',1) then return end
 
--- The structural scanner used to require repeated button-family evidence for
--- non-zero purchases. That rejects tycoons which expose only one next purchase
--- at a time. In a verified owned plot, accept a tightly-local priced interaction
--- as a purchase candidate while retaining the scanner's premium/ad filters.
-local scannerCompat=[[if name == "scanner" and source then
-        local patchedScanner, scannerPatchCount = source:gsub(
-            "if familySize>=2 or hinted or r%.price==0 then",
-            "if familySize>=2 or hinted or r.price==0 or (verified and (r.depth or 99)<=2) then"
-        )
-        if scannerPatchCount == 1 then
-            source = patchedScanner
-        else
-            warn("[0xVyrs Tycoon Test] scanner isolated-purchase patch mismatch: " .. tostring(scannerPatchCount))
-        end
+local moduleCompat=[[local function literalReplace(text, needle, replacement)
+        local first,last=string.find(text,needle,1,true)
+        if not first then return text,0 end
+        return string.sub(text,1,first-1)..replacement..string.sub(text,last+1),1
     end
+
+    if name == "scanner" and source then
+        local count
+        source,count=literalReplace(source,
+            "if familySize>=2 or hinted or r.price==0 then",
+            "if familySize>=2 or hinted or r.price==0 or (verified and (r.depth or 99)<=2) then")
+        if count~=1 then warn("[0xVyrs Tycoon Test] scanner isolated-purchase patch mismatch: "..tostring(count)) end
+    elseif name == "collector" and source then
+        local count
+        source,count=literalReplace(source,"            waitStep(0.018)","            waitStep(0.045)")
+        if count~=1 then warn("[0xVyrs Tycoon Test] collector touch-hold patch mismatch: "..tostring(count)) end
+
+        local oldCapture=[[    local function capturePurchase(scanContext,button)
+        local object=button and button.object
+        return {object=object,parent=object and object.Parent or nil,cash=tonumber(scanContext.getCash()),price=tonumber(button and button.price) or 0,hadActivation=activationAlive(button) and true or false}
+    end]]
+        local newCapture=[[    local function purchaseSignature(button)
+        local origin=button and (button.object or button.touchPart)
+        if not origin or not origin.Parent then return nil end
+        local pieces={}
+        local queue={origin}
+        local cursor=1
+        local inspected=0
+        while cursor<=#queue and inspected<56 do
+            local current=queue[cursor]
+            cursor=cursor+1
+            local currentName=tostring(current.Name or "")
+            if not currentName:find("Vyrs",1,true) then
+                if current:IsA("TextLabel") or current:IsA("TextButton") then
+                    local text=tostring(current.Text or "")
+                    if text~="" then table.insert(pieces,currentName.."="..text) end
+                elseif current:IsA("StringValue") or current:IsA("IntValue") or current:IsA("NumberValue") then
+                    local lname=string.lower(currentName)
+                    if lname:find("price",1,true) or lname:find("cost",1,true) or lname:find("amount",1,true) then
+                        table.insert(pieces,currentName.."="..tostring(current.Value))
+                    end
+                end
+                for _,child in ipairs(current:GetChildren()) do
+                    inspected=inspected+1
+                    if inspected<=56 and not tostring(child.Name or ""):find("Vyrs",1,true) then table.insert(queue,child) end
+                    if inspected>=56 then break end
+                end
+            end
+        end
+        table.sort(pieces)
+        return table.concat(pieces,"|")
+    end
+
+    local function capturePurchase(scanContext,button)
+        local object=button and button.object
+        return {
+            object=object,
+            parent=object and object.Parent or nil,
+            cash=tonumber(scanContext.getCash()),
+            price=tonumber(button and button.price) or 0,
+            hadActivation=activationAlive(button) and true or false,
+            signature=purchaseSignature(button),
+        }
+    end]]
+        source,count=literalReplace(source,oldCapture,newCapture)
+        if count~=1 then warn("[0xVyrs Tycoon Test] collector signature capture patch mismatch: "..tostring(count)) end
+
+        local oldApplied=[[    local function purchaseApplied(scanContext,button,before)
+        local object=before.object
+        if not object or not object.Parent then return true end
+        if hasPurchasedAncestor(object) then return true end
+        if before.parent and object.Parent~=before.parent then return true end
+        if before.hadActivation and not activationAlive(button) then return true end
+        local current=tonumber(scanContext.getCash())
+        return before.cash and current and before.price>0 and current<before.cash or false
+    end]]
+        local newApplied=[[    local function purchaseApplied(scanContext,button,before)
+        local object=before.object
+        if not object or not object.Parent then return true end
+        if hasPurchasedAncestor(object) then return true end
+        if before.parent and object.Parent~=before.parent then return true end
+        if before.hadActivation and not activationAlive(button) then return true end
+        local currentSignature=purchaseSignature(button)
+        if before.signature and currentSignature and currentSignature~=before.signature then return true end
+        local current=tonumber(scanContext.getCash())
+        return before.cash and current and before.price>0 and current<before.cash or false
+    end]]
+        source,count=literalReplace(source,oldApplied,newApplied)
+        if count~=1 then warn("[0xVyrs Tycoon Test] collector reused-pad verification patch mismatch: "..tostring(count)) end
+    elseif name == "upgrades" and source then
+        local count
+        source,count=literalReplace(source,
+            "\t\twaypointGui.Parent = entry.part",
+            "\t\tlocal waypointHost = context and context.LOCAL_PLAYER and context.LOCAL_PLAYER:FindFirstChildOfClass(\"PlayerGui\")\n\t\tif waypointHost then waypointGui.Parent = waypointHost end")
+        if count~=1 then warn("[0xVyrs Tycoon Test] waypoint lifecycle patch mismatch: "..tostring(count)) end
+    end
+
     if not source then return nil end]]
-if not patch('if not source then return nil end',scannerCompat,1) then return end
+if not patch('if not source then return nil end',moduleCompat,1) then return end
 
 if not patch('local EVENT_SCAN_DEBOUNCE = 0%.16','local EVENT_SCAN_DEBOUNCE = 0.35',1) then return end
 if not patch('local EVENT_SCAN_MIN_INTERVAL = 0%.38','local EVENT_SCAN_MIN_INTERVAL = 1.25',1) then return end
@@ -105,7 +187,7 @@ if task and task.spawn then
             local api=env.__VYRS_TYCOON_AUTONOMOUS
             local ok,status=api and type(api.status)=="function" and pcall(api.status)
             if ok and status and status.enabled then
-                task.wait(5)
+                task.wait(6)
                 local runtime=env.__VYRS_TYCOON_DIAGNOSTICS
                 local data=runtime and runtime.data
                 local target=runtime and runtime.plannedTarget
@@ -118,7 +200,7 @@ if task and task.spawn then
                     tostring(data and data.affordableCount or 0),
                     tostring(data and data.lockedCount or 0),
                     tostring(target and target.name or "nil")))
-                if runtime and (runtime.bought or 0)==0 and data then
+                if runtime and data then
                     for i=1,math.min(5,#(data.buttons or {})) do
                         local b=data.buttons[i]
                         local kind=(b.prompt and b.prompt.Parent and "prompt") or (b.clickDetector and b.clickDetector.Parent and "click") or (b.touchPart and b.touchPart.Parent and "touch") or "none"
@@ -134,5 +216,5 @@ if task and task.spawn then
     end)
 end
 
-print("[0xVyrs Tycoon Test] deep hardening active // strict local-player currency // isolated-purchase compatibility")
+print("[0xVyrs Tycoon Test] deep hardening active // strict currency // isolated buttons // reused-pad verification // stable waypoint")
 return chunk()
