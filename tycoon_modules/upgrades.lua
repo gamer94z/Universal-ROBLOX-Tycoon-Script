@@ -354,7 +354,14 @@ return function(context)
 	end
 
 	local function updateWaypoint(entry)
-		if not entry or not entry.part or not entry.part.Parent then hideWaypoint() return end
+		-- A target marker should represent something actionable. If cash dropped
+		-- below the price after another purchase, hide it until the planner has an
+		-- affordable target again instead of visually jumping to a locked button.
+		if not entry or entry.affordable ~= true or entry.paidPurchase
+			or not entry.part or not entry.part.Parent then
+			hideWaypoint()
+			return
+		end
 		if not waypointGui then waypointGui = createWaypoint() end
 		waypointGui.Adornee = entry.part
 		waypointGui.Parent = entry.part
@@ -370,9 +377,8 @@ return function(context)
 		if detail then
 			local root = context and context.getLocalRoot and context.getLocalRoot()
 			local distance = root and entry.part and math.floor((entry.part.Position - root.Position).Magnitude + 0.5) or nil
-			local state = entry.affordable and "READY" or "WAITING"
-			detail.Text = distance and string.format("%s  //  %d studs", state, distance) or state
-			detail.TextColor3 = entry.affordable and THEME.success or THEME.warning
+			detail.Text = distance and string.format("READY  //  %d studs", distance) or "READY"
+			detail.TextColor3 = THEME.success
 		end
 	end
 
