@@ -17,6 +17,12 @@ return function(context)
 		"advert", "purchase", "buy now", "shop", "store", "subscribe",
 	}
 
+	local DISCOVERY_INTERVAL = 30
+	local SWEEP_INTERVAL = 5
+	local PLAYER_GUI_BUDGET = 260
+	local TYCOON_BUDGET = 320
+	local MAX_CANDIDATES = 14
+
 	local cooldowns = setmetatable({}, { __mode = "k" })
 	local cachedCandidates = {}
 	local cachedRoot
@@ -58,7 +64,7 @@ return function(context)
 			local inspected = 0
 			for _, sibling in ipairs(parent:GetChildren()) do
 				inspected = inspected + 1
-				if inspected > 18 then break end
+				if inspected > 10 then break end
 				table.insert(parts, objectText(sibling))
 			end
 		end
@@ -66,7 +72,7 @@ return function(context)
 			local inspected = 0
 			for _, child in ipairs(object:GetChildren()) do
 				inspected = inspected + 1
-				if inspected > 12 then break end
+				if inspected > 8 then break end
 				table.insert(parts, objectText(child))
 			end
 		end
@@ -106,15 +112,11 @@ return function(context)
 			local actor = getTouchActor()
 			local part = candidate.Parent
 			if not actor or not part or not part:IsA("BasePart") then return false end
-			local oldCollide = part.CanCollide
-			local ok = pcall(function()
-				part.CanCollide = false
+			return pcall(function()
 				firetouchinterest(actor, part, 0)
-				if task and task.wait then task.wait(0.02) else wait(0.02) end
+				if task and task.wait then task.wait(0.015) else wait(0.015) end
 				firetouchinterest(actor, part, 1)
 			end)
-			pcall(function() if part and part.Parent then part.CanCollide = oldCollide end end)
-			return ok
 		end
 		return false
 	end
@@ -135,27 +137,27 @@ return function(context)
 			inspected = inspected + 1
 			if inspected > maxInspect then break end
 			addCandidate(list, seen, descendant)
-			if #list >= 20 then break end
+			if #list >= MAX_CANDIDATES then break end
 		end
 	end
 
 	local function discover(data)
 		local root = data and data.ownerVerified and data.root ~= workspace and data.root or nil
 		local now = os.clock()
-		if root == cachedRoot and now - lastDiscovery < 12 then return end
+		if root == cachedRoot and now - lastDiscovery < DISCOVERY_INTERVAL then return end
 		cachedRoot = root
 		lastDiscovery = now
 
 		local found = {}
 		local seen = {}
-		gatherFrom(LOCAL_PLAYER:FindFirstChildOfClass("PlayerGui"), found, seen, 450)
-		if root then gatherFrom(root, found, seen, 500) end
+		gatherFrom(LOCAL_PLAYER:FindFirstChildOfClass("PlayerGui"), found, seen, PLAYER_GUI_BUDGET)
+		if root and #found < MAX_CANDIDATES then gatherFrom(root, found, seen, TYCOON_BUDGET) end
 		cachedCandidates = found
 	end
 
 	local function sweep(data)
 		local now = os.clock()
-		if now - lastSweep < 2.5 then return 0 end
+		if now - lastSweep < SWEEP_INTERVAL then return 0 end
 		lastSweep = now
 		discover(data)
 
@@ -167,7 +169,7 @@ return function(context)
 			else
 				local cooldownUntil = cooldowns[candidate] or 0
 				if now >= cooldownUntil and isSafeFreeCandidate(candidate) then
-					cooldowns[candidate] = now + 25
+					cooldowns[candidate] = now + 30
 					if activate(candidate) then
 						count = count + 1
 						activated = activated + 1
@@ -177,7 +179,7 @@ return function(context)
 					end
 				end
 			end
-			if count >= 3 then break end
+			if count >= 2 then break end
 		end
 		return count
 	end
