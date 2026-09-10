@@ -1,0 +1,220 @@
+return function(context)
+	local Players = context.Players
+	local LOCAL_PLAYER = context.LOCAL_PLAYER
+
+	local REBIRTH_WORDS = { "rebirth", "prestige", "ascend", "restart tycoon", "reset tycoon" }
+	local BLOCKED_REBIRTH_WORDS = { "robux", "gamepass", "game pass", "premium", "developer product", "watch ad", "video ad" }
+
+	local state = {
+		startedAt = nil,
+		completedAt = nil,
+		completionRecorded = false,
+		lastCharacterSeen = nil,
+		lastRootSeen = nil,
+		lastRebirthAttempt = 0,
+		rebirthAttempts = 0,
+		rebirthSuccesses = 0,
+		recoveries = 0,
+	}
+
+	local function lower(value)
+		return tostring(value or ""):lower()
+	end
+
+	local function hasAny(text, words)
+		text = lower(text)
+		for _, word in ipairs(words) do
+			if text:find(word, 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function getBuyInterval(data)
+		if not data or not data.buttons then return 0.8 end
+		local affordable = 0
+		for _, button in ipairs(data.buttons) do
+			if button.affordable and not button.paidPurchase and not (button.blockedUntil and button.blockedUntil > os.clock()) then
+				affordable = affordable + 1
+			end
+		end
+		if affordable >= 6 then return 0.12 end
+		if affordable >= 3 then return 0.18 end
+		if affordable >= 1 then return 0.28 end
+		return 0.7
+	end
+
+	local function getCollectInterval(data)
+		if not data or not data.drops then return 1 end
+		if #data.drops >= 15 then return 0.18 end
+		if #data.drops >= 5 then return 0.3 end
+		return 0.5
+	end
+
+	local function resetRunClock()
+		state.startedAt = os.clock()
+		state.completedAt = nil
+		state.completionRecorded = false
+	end
+
+	local function noteEnabled(enabled)
+		if enabled and not state.startedAt then
+			resetRunClock()
+		elseif not enabled then
+			state.startedAt = nil
+			state.completedAt = nil
+			state.completionRecorded = false
+		end
+	end
+
+	local function updateRecovery(data)
+		local character = LOCAL_PLAYER.Character
+		local root = context.getLocalRoot()
+		if character and state.lastCharacterSeen and character ~= state.lastCharacterSeen then
+			state.recoveries = state.recoveries + 1
+		end
+		if root and not state.lastRootSeen and state.lastCharacterSeen then
+			state.recoveries = state.recoveries + 1
+		end
+		state.lastCharacterSeen = character
+		state.lastRootSeen = root
+		return root ~= nil and data ~= nil
+	end
+
+	local function objectText(instance)
+		local parts = { instance.Name }
+		if instance:IsA("ProximityPrompt") then
+			table.insert(parts, instance.ActionText)
+			table.insert(parts, instance.ObjectText)
+		elseif instance:IsA("TextButton") or instance:IsA("TextLabel") then
+			table.insert(parts, instance.Text)
+		end
+		return lower(table.concat(parts, " "))
+	end
+
+	local function rebirthCandidateLooksSafe(instance)
+		local text = objectText(instance)
+		if not hasAny(text, REBIRTH_WORDS) then return false end
+		if hasAny(text, BLOCKED_REBIRTH_WORDS) then return false end
+		local parent = instance.Parent
+		if parent and hasAny(parent.Name, BLOCKED_REBIRTH_WORDS) then return false end
+		return true
+	end
+
+	local function findRebirthCandidate(data)
+		local root = data and data.root
+		if not root or root == workspace or not root.Parent then return nil end
+		for _, descendant in ipairs(root:GetDescendants()) do
+			if descendant:IsA("ProximityPrompt") or descendant:IsA("ClickDetector") or descendant:IsA("TouchTransmitter") then
+				local host = descendant.Parent
+				local current = host
+				local depth = 0
+				while current and current ~= root and depth < 3 do
+					if rebirthCandidateLooksSafe(current) then
+						return { interaction = descendant, host = current }
+					end
+					current = current.Parent
+					depth = depth + 1
+				end
+			end
+		end
+
+		local playerGui = LOCAL_PLAYER:FindFirstChildOfClass("PlayerGui")
+		if playerGui then
+			for _, descendant in ipairs(playerGui:GetDescendants()) do
+				if descendant:IsA("TextButton") and descendant.Visible and rebirthCandidateLooksSafe(descendant) then
+					return { interaction = descendant, host = descendant, gui = true }
+				end
+			end
+		end
+		return nil
+	end
+
+	local function fireCandidate(candidate)
+		if not candidate or not candidate.interaction then return false end
+		local interaction = candidate.interaction
+		if interaction:IsA("ProximityPrompt") and type(fireproximityprompt) == "function" then
+			return pcall(function() fireproximityprompt(interaction) end)
+		elseif interaction:IsA("ClickDetector") and type(fireclickdetector) == "function" then
+			return pcall(function() fireclickdetector(interaction) end)
+		elseif interaction:IsA("TouchTransmitter") and type(firetouchinterest) == "function" then
+			local root = context.getLocalRoot()
+			local part = interaction.Parent
+			if root and part and part:IsA("BasePart") then
+				return pcall(function()
+					firetouchinterest(root, part, 0)
+					if task and task.wait then task.wait(0.03) else wait(0.03) end
+					firetouchinterest(root, part, 1)
+				end)
+			end
+		elseif candidate.gui and type(firesignal) == "function" then
+			return pcall(function() firesignal(interaction.MouseButton1Click) end)
+		end
+		return false
+	end
+
+	local function tryRebirth(data)
+		if os.clock() - state.lastRebirthAttempt < 5 then return false end
+		local candidate = findRebirthCandidate(data)
+		if not candidate then return false end
+		state.lastRebirthAttempt = os.clock()
+		state.rebirthAttempts = state.rebirthAttempts + 1
+		local beforeRoot = data and data.root
+		local ok = fireCandidate(candidate)
+		if not ok then return false end
+		if task and task.wait then task.wait(0.5) else wait(0.5) end
+		local afterRoot = data and data.root
+		local character = LOCAL_PLAYER.Character
+		if (beforeRoot and not beforeRoot.Parent) or afterRoot ~= beforeRoot or not character then
+			state.rebirthSuccesses = state.rebirthSuccesses + 1
+			resetRunClock()
+			return true
+		end
+		return ok
+	end
+
+	local function updateCompletion(brain, data)
+		if not brain or not brain.isLikelyComplete then return false end
+		local complete = brain.isLikelyComplete(data)
+		if complete and not state.completedAt then
+			state.completedAt = os.clock()
+		end
+		if not complete then
+			state.completedAt = nil
+			state.completionRecorded = false
+		end
+		return complete
+	end
+
+	local function recordCompletion(brain)
+		if state.completionRecorded or not state.completedAt or not state.startedAt then return end
+		state.completionRecorded = true
+		if brain and brain.markRunComplete then
+			brain.markRunComplete(state.completedAt - state.startedAt)
+		end
+	end
+
+	local function getStatus()
+		return {
+			startedAt = state.startedAt,
+			completedAt = state.completedAt,
+			rebirthAttempts = state.rebirthAttempts,
+			rebirthSuccesses = state.rebirthSuccesses,
+			recoveries = state.recoveries,
+		}
+	end
+
+	return {
+		noteEnabled = noteEnabled,
+		updateRecovery = updateRecovery,
+		getBuyInterval = getBuyInterval,
+		getCollectInterval = getCollectInterval,
+		updateCompletion = updateCompletion,
+		recordCompletion = recordCompletion,
+		findRebirthCandidate = findRebirthCandidate,
+		tryRebirth = tryRebirth,
+		resetRunClock = resetRunClock,
+		getStatus = getStatus,
+	}
+end
