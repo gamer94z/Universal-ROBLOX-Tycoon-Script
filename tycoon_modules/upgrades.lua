@@ -27,6 +27,15 @@ return function()
 		end
 	end
 
+	local function destroy()
+		clear()
+		clearLabels()
+		if waypointGui then
+			waypointGui:Destroy()
+			waypointGui = nil
+		end
+	end
+
 	local function getDistance(entry, root)
 		if not entry or not entry.part or not root then
 			return math.huge
@@ -259,6 +268,7 @@ return function()
 		clear = clear,
 		clearLabels = clearLabels,
 		hideWaypoint = hideWaypoint,
+		destroy = destroy,
 		getNearestAffordable = getNearestAffordable,
 		getCheapestAffordable = getCheapestAffordable,
 		getMostExpensiveAffordable = getMostExpensiveAffordable,
