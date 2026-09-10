@@ -1,672 +1,536 @@
-return function()
-	local BLOCKED_PHRASES = {
-		"watch ad",
-		"watch ads",
-		"watch video",
-		"video ad",
-		"video ads",
-		"rewarded ad",
-		"rewarded video",
-		"ad reward",
-		"advertisement",
-		"developer product",
-		"game pass",
-		"gamepass",
-		"robux",
-		"premium purchase",
-	}
-
-	local purchaseFailures = setmetatable({}, { __mode = "k" })
-	local collectCooldowns = setmetatable({}, { __mode = "k" })
-	local collectStates = setmetatable({}, { __mode = "k" })
-	local collectCursor = 1
-	local MAX_COLLECT_PER_PASS = 6
-	local COLLECT_TARGET_COOLDOWN = 0.35
-	local COLLECTION_ROOT_FALLBACK_MISSES = 3
-	local COLLECTION_ROOT_FALLBACK_COOLDOWN = 1.25
-	local COLLECTION_ACTOR_NAMES = {
-		"LeftFoot",
-		"RightFoot",
-		"LeftLowerLeg",
-		"RightLowerLeg",
-		"Left Leg",
-		"Right Leg",
-		"LowerTorso",
-		"Torso",
-		"Head",
-	}
-
-	local diagnostics = {
-		attempts = 0,
-		activations = 0,
-		cashConfirmed = 0,
-		actorRetries = 0,
-		rootFallbacks = 0,
-		staleRefreshes = 0,
-		failed = 0,
-		unaffordableSkips = 0,
-	}
-
-	local function lower(value)
-		return tostring(value or ""):lower()
-	end
-
-	local function waitStep(seconds)
-		seconds = seconds or 0
-		if task and task.wait then
-			task.wait(seconds)
-		else
-			wait(seconds)
-		end
-	end
-
-	local function hasStandaloneToken(text, token)
-		local normalized = " " .. lower(text):gsub("[^%w]+", " ") .. " "
-		return normalized:find(" " .. token .. " ", 1, true) ~= nil
-	end
-
-	local function textLooksBlocked(text)
-		local clean = lower(text)
-		for _, phrase in ipairs(BLOCKED_PHRASES) do
-			if clean:find(phrase, 1, true) then
-				return true
-			end
-		end
-
-		if hasStandaloneToken(clean, "ad") or hasStandaloneToken(clean, "ads") then
-			return true
-		end
-		if hasStandaloneToken(clean, "advert") or hasStandaloneToken(clean, "advertisement") then
-			return true
-		end
-		if hasStandaloneToken(clean, "rewarded") and hasStandaloneToken(clean, "video") then
-			return true
-		end
-		return false
-	end
-
-	local function instanceLooksBlocked(instance)
-		if not instance then
-			return false
-		end
-
-		if textLooksBlocked(instance.Name) then
-			return true
-		end
-
-		if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
-			if textLooksBlocked(instance.Text) then
-				return true
-			end
-		elseif instance:IsA("ProximityPrompt") then
-			if textLooksBlocked(instance.ActionText) or textLooksBlocked(instance.ObjectText) then
-				return true
-			end
-		end
-
-		local ok, attributes = pcall(function()
-			return instance:GetAttributes()
-		end)
-		if ok and type(attributes) == "table" then
-			for key, value in pairs(attributes) do
-				if textLooksBlocked(key) or (type(value) == "string" and textLooksBlocked(value)) then
-					return true
-				end
-			end
-		end
-
-		return false
-	end
-
-	local function isGenericPurchaseContainer(instance)
-		if not instance then
-			return false
-		end
-		local name = lower(instance.Name):gsub("[^%w]", "")
-		return name == "buttons"
-			or name == "button"
-			or name == "pads"
-			or name == "purchasepads"
-			or name == "purchasebuttons"
-			or name == "buybuttons"
-			or name == "buyitems"
-	end
-
-	local function purchaseLooksBlocked(button)
-		if not button then
-			return true
-		end
-		if button.paidPurchase then
-			return true
-		end
-
-		local object = button.object
-		if not object or not object.Parent then
-			return true
-		end
-
-		if instanceLooksBlocked(object) then
-			return true
-		end
-		for _, descendant in ipairs(object:GetDescendants()) do
-			if instanceLooksBlocked(descendant) then
-				return true
-			end
-		end
-
-		local parent = object.Parent
-		if parent and parent ~= workspace and not isGenericPurchaseContainer(parent) then
-			if instanceLooksBlocked(parent) then
-				return true
-			end
-		end
-
-		return false
-	end
-
-	local function firePrompt(prompt)
-		if not prompt or not prompt.Parent or type(fireproximityprompt) ~= "function" then
-			return false
-		end
-		return pcall(function()
-			fireproximityprompt(prompt)
-		end)
-	end
-
-	local function fireClick(clickDetector)
-		if not clickDetector or not clickDetector.Parent or type(fireclickdetector) ~= "function" then
-			return false
-		end
-		return pcall(function()
-			fireclickdetector(clickDetector)
-		end)
-	end
-
-	local function captureRootState(root)
-		if not root or not root.Parent then
-			return nil
-		end
-
-		return {
-			cframe = root.CFrame,
-			linearVelocity = root.AssemblyLinearVelocity,
-			angularVelocity = root.AssemblyAngularVelocity,
-		}
-	end
-
-	local function restoreRootState(root, state)
-		if not root or not root.Parent or not state then
-			return
-		end
-
-		pcall(function()
-			root.CFrame = state.cframe
-			root.AssemblyLinearVelocity = state.linearVelocity
-			root.AssemblyAngularVelocity = state.angularVelocity
-		end)
-	end
-
-	local function getCollectionTouchActors(context, root)
-		local actors = {}
-		local seen = {}
-		local character = context.LOCAL_PLAYER and context.LOCAL_PLAYER.Character
-		if not character then
-			return actors
-		end
-
-		local function add(part)
-			if part and part.Parent and part:IsA("BasePart") and part ~= root and not seen[part] then
-				seen[part] = true
-				table.insert(actors, part)
-			end
-		end
-
-		for _, name in ipairs(COLLECTION_ACTOR_NAMES) do
-			add(character:FindFirstChild(name))
-		end
-		for _, child in ipairs(character:GetChildren()) do
-			add(child)
-		end
-		return actors
-	end
-
-	local function touch(actor, part, suppressCollision)
-		if not actor or not actor.Parent or not part or not part.Parent then
-			return false
-		end
-		if type(firetouchinterest) ~= "function" then
-			return false
-		end
-
-		local oldTargetCanCollide
-		if suppressCollision and part:IsA("BasePart") then
-			oldTargetCanCollide = part.CanCollide
-			pcall(function()
-				part.CanCollide = false
-			end)
-		end
-
-		local ok = pcall(function()
-			firetouchinterest(actor, part, 0)
-			waitStep(0.02)
-			firetouchinterest(actor, part, 1)
-		end)
-
-		if suppressCollision and oldTargetCanCollide ~= nil and part and part.Parent then
-			pcall(function()
-				part.CanCollide = oldTargetCanCollide
-			end)
-		end
-
-		return ok
-	end
-
-	local function teleportTouch(root, part)
-		if not root or not root.Parent or not part or not part.Parent then
-			return false
-		end
-
-		local originalState = captureRootState(root)
-		local targetCFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
-		local moved = pcall(function()
-			root.CFrame = targetCFrame
-			root.AssemblyLinearVelocity = Vector3.zero
-			root.AssemblyAngularVelocity = Vector3.zero
-		end)
-		if not moved then
-			return touch(root, part, false)
-		end
-
-		waitStep(0.08)
-		local touched = touch(root, part, false)
-		waitStep(0.08)
-		restoreRootState(root, originalState)
-
-		return touched
-	end
-
-	local function activateEntry(context, root, entry, allowTeleport, collectionActor)
-		if not entry then
-			return false
-		end
-
-		if firePrompt(entry.prompt) then
-			return true
-		end
-		if fireClick(entry.clickDetector) then
-			return true
-		end
-		if entry.touchPart then
-			-- The autonomous runtime is deliberately virtual-only. The old Teleport
-			-- mode remains available to the stable/manual runtime, but an autonomous
-			-- purchase must never move the player's HumanoidRootPart.
-			local autonomous = context.CONFIG.autopilotEnabled ~= nil
-			if allowTeleport and not autonomous and context.CONFIG.touchMode == "Teleport" then
-				return teleportTouch(root, entry.touchPart)
-			end
-
-			local actor = collectionActor or root
-			return touch(actor, entry.touchPart, collectionActor ~= nil)
-		end
-
-		return false
-	end
-
-	local function hasPurchasedAncestor(object)
-		local current = object and object.Parent
-		while current and current ~= workspace do
-			local name = lower(current.Name):gsub("[^%w]", "")
-			if name == "purchased" or name == "purchasedobjects" or name == "bought" or name == "owneditems" then
-				return true
-			end
-			current = current.Parent
-		end
-		return false
-	end
-
-	local function entryHasLiveActivation(entry)
-		return (entry.prompt and entry.prompt.Parent)
-			or (entry.clickDetector and entry.clickDetector.Parent)
-			or (entry.touchPart and entry.touchPart.Parent)
-	end
-
-	local function refreshCollectionInteraction(entry)
-		if not entry or not entry.object or not entry.object.Parent then
-			return false
-		end
-		if entryHasLiveActivation(entry) then
-			return true
-		end
-
-		entry.prompt = nil
-		entry.clickDetector = nil
-		entry.touchPart = nil
-		local object = entry.object
-
-		local function inspect(instance)
-			if instance:IsA("ProximityPrompt") and not entry.prompt then
-				entry.prompt = instance
-			elseif instance:IsA("ClickDetector") and not entry.clickDetector then
-				entry.clickDetector = instance
-			elseif instance:IsA("TouchTransmitter") and not entry.touchPart then
-				local parent = instance.Parent
-				if parent and parent:IsA("BasePart") then
-					entry.touchPart = parent
-				end
-			end
-		end
-
-		inspect(object)
-		if object:IsA("BasePart") then
-			local transmitter = object:FindFirstChildOfClass("TouchTransmitter")
-			if transmitter then entry.touchPart = object end
-		end
-
-		if not entryHasLiveActivation(entry) then
-			for _, descendant in ipairs(object:GetDescendants()) do
-				inspect(descendant)
-				if entry.prompt or entry.clickDetector or entry.touchPart then
-					break
-				end
-			end
-		end
-
-		if entryHasLiveActivation(entry) then
-			diagnostics.staleRefreshes = diagnostics.staleRefreshes + 1
-			return true
-		end
-		return false
-	end
-
-	local function getCollectionState(entry)
-		local key = entry and (entry.touchPart or entry.prompt or entry.clickDetector or entry.object)
-		if not key then return nil end
-		local state = collectStates[key]
-		if not state then
-			state = {
-				actorIndex = 1,
-				misses = 0,
-				lastRootFallback = -math.huge,
-			}
-			collectStates[key] = state
-		end
-		return state
-	end
-
-	local function cashIncreased(context, beforeCash)
-		if beforeCash == nil then return false end
-		local currentCash = tonumber(context.getCash())
-		return currentCash ~= nil and currentCash > beforeCash
-	end
-
-	local function activateCollectionEntry(context, root, entry)
-		if not refreshCollectionInteraction(entry) then
-			diagnostics.failed = diagnostics.failed + 1
-			return false
-		end
-
-		if entry.prompt and entry.prompt.Parent then
-			local ok = firePrompt(entry.prompt)
-			if ok then diagnostics.activations = diagnostics.activations + 1 end
-			return ok
-		end
-		if entry.clickDetector and entry.clickDetector.Parent then
-			local ok = fireClick(entry.clickDetector)
-			if ok then diagnostics.activations = diagnostics.activations + 1 end
-			return ok
-		end
-
-		local target = entry.touchPart
-		if not target or not target.Parent then
-			diagnostics.failed = diagnostics.failed + 1
-			return false
-		end
-
-		local state = getCollectionState(entry)
-		local actors = getCollectionTouchActors(context, root)
-		local beforeCash = tonumber(context.getCash())
-		local anyTouch = false
-
-		if #actors > 0 then
-			if state.actorIndex > #actors then state.actorIndex = 1 end
-			local actor = actors[state.actorIndex]
-			state.actorIndex = (state.actorIndex % #actors) + 1
-			anyTouch = touch(actor, target, true)
-			if anyTouch then diagnostics.activations = diagnostics.activations + 1 end
-			waitStep(0.035)
-
-			if cashIncreased(context, beforeCash) then
-				state.misses = 0
-				diagnostics.cashConfirmed = diagnostics.cashConfirmed + 1
-				return true
-			end
-
-			if #actors > 1 then
-				diagnostics.actorRetries = diagnostics.actorRetries + 1
-				if state.actorIndex > #actors then state.actorIndex = 1 end
-				local retryActor = actors[state.actorIndex]
-				state.actorIndex = (state.actorIndex % #actors) + 1
-				local retried = touch(retryActor, target, true)
-				anyTouch = retried or anyTouch
-				if retried then diagnostics.activations = diagnostics.activations + 1 end
-				waitStep(0.035)
-				if cashIncreased(context, beforeCash) then
-					state.misses = 0
-					diagnostics.cashConfirmed = diagnostics.cashConfirmed + 1
-					return true
-				end
-			end
-		end
-
-		state.misses = math.min(12, (state.misses or 0) + 1)
-		local now = os.clock()
-		if state.misses >= COLLECTION_ROOT_FALLBACK_MISSES
-			and now - state.lastRootFallback >= COLLECTION_ROOT_FALLBACK_COOLDOWN
-			and root and root.Parent then
-			state.lastRootFallback = now
-			diagnostics.rootFallbacks = diagnostics.rootFallbacks + 1
-			local fallback = touch(root, target, true)
-			anyTouch = fallback or anyTouch
-			if fallback then diagnostics.activations = diagnostics.activations + 1 end
-			waitStep(0.04)
-			if cashIncreased(context, beforeCash) then
-				state.misses = 0
-				diagnostics.cashConfirmed = diagnostics.cashConfirmed + 1
-				return true
-			end
-		end
-
-		if not anyTouch then diagnostics.failed = diagnostics.failed + 1 end
-		return anyTouch
-	end
-
-	local function capturePurchaseState(context, button)
-		local object = button and button.object
-		return {
-			object = object,
-			parent = object and object.Parent or nil,
-			cash = tonumber(context.getCash()),
-			price = tonumber(button and button.price) or 0,
-			hadActivation = entryHasLiveActivation(button) and true or false,
-		}
-	end
-
-	local function purchaseWasApplied(context, button, before)
-		local object = before.object
-		if not object or not object.Parent then
-			return true
-		end
-		if hasPurchasedAncestor(object) then
-			return true
-		end
-		if before.parent and object.Parent ~= before.parent then
-			return true
-		end
-		if before.hadActivation and not entryHasLiveActivation(button) then
-			return true
-		end
-
-		local currentCash = tonumber(context.getCash())
-		if before.cash and currentCash and before.price > 0 and currentCash < before.cash then
-			return true
-		end
-
-		return false
-	end
-
-	local function verifyPurchase(context, button, before)
-		local deadline = os.clock() + 1.15
-		repeat
-			if purchaseWasApplied(context, button, before) then
-				return true
-			end
-			waitStep(0.08)
-		until os.clock() >= deadline
-		return purchaseWasApplied(context, button, before)
-	end
-
-	local function putPurchaseOnCooldown(button)
-		if not button or not button.object then
-			return
-		end
-
-		local failures = (purchaseFailures[button.object] or 0) + 1
-		purchaseFailures[button.object] = failures
-		button.failureCount = failures
-		button.blockedUntil = os.clock() + math.min(12, 1.5 + failures * 1.5)
-	end
-
-	local function collectNearby(context, data)
-		if not data or not data.drops or data.automationAllowed ~= true or #data.drops == 0 then
-			return 0
-		end
-
-		local root = context.getLocalRoot()
-		if not root then
-			return 0
-		end
-
-		local now = os.clock()
-		local total = #data.drops
-		if collectCursor > total then
-			collectCursor = 1
-		end
-
-		local collected = 0
-		local activated = 0
-		local checked = 0
-		local index = collectCursor
-
-		while checked < total and activated < MAX_COLLECT_PER_PASS do
-			local drop = data.drops[index]
-			checked = checked + 1
-
-			if drop and drop.object and drop.object.Parent then
-				refreshCollectionInteraction(drop)
-				local targetPart = drop.touchPart or drop.part
-				if not targetPart and drop.prompt and drop.prompt.Parent and drop.prompt.Parent:IsA("BasePart") then
-					targetPart = drop.prompt.Parent
-				elseif not targetPart and drop.clickDetector and drop.clickDetector.Parent and drop.clickDetector.Parent:IsA("BasePart") then
-					targetPart = drop.clickDetector.Parent
-				end
-
-				local targetAlive = targetPart == nil or targetPart.Parent ~= nil
-				-- Autonomous mode owns the whole verified plot, so collection should
-				-- not stop just because the player walked outside collectRange.
-				local autonomous = context.CONFIG.autopilotEnabled ~= nil
-				local inRange = autonomous
-					or context.CONFIG.collectMode == "Tycoon"
-					or (targetPart and targetAlive and (targetPart.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
-				local modeAllows = context.CONFIG.collectMode ~= "Collectors"
-					or lower(drop.name):find("collect", 1, true) ~= nil
-				local cooldownKey = drop.touchPart or drop.prompt or drop.clickDetector or drop.object
-				local cooldownUntil = collectCooldowns[cooldownKey] or 0
-
-				if inRange and modeAllows and now >= cooldownUntil then
-					activated = activated + 1
-					diagnostics.attempts = diagnostics.attempts + 1
-					if activateCollectionEntry(context, root, drop) then
-						collected = collected + 1
-						collectCooldowns[cooldownKey] = now + COLLECT_TARGET_COOLDOWN
-					else
-						collectCooldowns[cooldownKey] = now + 0.15
-					end
-				end
-			end
-
-			index = (index % total) + 1
-		end
-
-		collectCursor = index
-		return collected
-	end
-
-	local function buyButton(context, button)
-		if not button or button.automationAllowed ~= true then
-			return false
-		end
-		if button.blockedUntil and button.blockedUntil > os.clock() then
-			return false
-		end
-		if purchaseLooksBlocked(button) then
-			button.paidPurchase = true
-			button.affordable = false
-			button.locked = false
-			return false
-		end
-
-		-- Re-check affordability at the exact moment of activation. The scanner
-		-- can be a fraction of a second behind after a previous purchase, which
-		-- used to let stale targets enter the Teleport path while cash was short.
-		local currentCash = tonumber(context.getCash())
-		local price = math.max(0, tonumber(button.price) or 0)
-		if currentCash ~= nil and price > currentCash then
-			button.affordable = false
-			button.locked = true
-			diagnostics.unaffordableSkips = diagnostics.unaffordableSkips + 1
-			return false
-		end
-
-		local root = context.getLocalRoot()
-		if not root then
-			return false
-		end
-
-		local before = capturePurchaseState(context, button)
-		if not activateEntry(context, root, button, true, nil) then
-			putPurchaseOnCooldown(button)
-			return false
-		end
-
-		if verifyPurchase(context, button, before) then
-			if button.object then
-				purchaseFailures[button.object] = nil
-			end
-			button.blockedUntil = nil
-			button.failureCount = 0
-			return true
-		end
-
-		putPurchaseOnCooldown(button)
-		return false
-	end
-
-	local function getStatus()
-		return {
-			attempts = diagnostics.attempts,
-			activations = diagnostics.activations,
-			cashConfirmed = diagnostics.cashConfirmed,
-			actorRetries = diagnostics.actorRetries,
-			rootFallbacks = diagnostics.rootFallbacks,
-			staleRefreshes = diagnostics.staleRefreshes,
-			failed = diagnostics.failed,
-			unaffordableSkips = diagnostics.unaffordableSkips,
-		}
-	end
-
-	return {
-		collectNearby = collectNearby,
-		buyButton = buyButton,
-		getStatus = getStatus,
-	}
+-- 0xVyrs Tycoon interaction worker v4
+-- Structured outcomes, evidence-based paid filtering, bounded verification.
+
+return function(context)
+    local CONFIG=context.CONFIG or {}
+    local actorIndexes=setmetatable({}, {__mode="k"})
+    local collectCooldowns=setmetatable({}, {__mode="k"})
+    local noclipStates=setmetatable({}, {__mode="k"})
+    local collectCursor=1
+
+    local COLLECT_COOLDOWN=0.8
+    local CONFIRM_TIMEOUT=0.9
+    local APPROACH_TIMEOUT=4.0
+    local APPROACH_DISTANCE=4.5
+    local APPROACH_MAX_DISTANCE=140
+    local MAX_EVIDENCE_INSPECT=30
+    local SIGNATURE_INSPECT=36
+    local PURCHASE_ACTORS={"HumanoidRootPart","LeftFoot","RightFoot","LeftLowerLeg","RightLowerLeg","Left Leg","Right Leg","LowerTorso","Torso","Head"}
+    local COLLECT_ACTORS={"LeftFoot","RightFoot","LeftLowerLeg","RightLowerLeg","Left Leg","Right Leg","LowerTorso","Torso","HumanoidRootPart"}
+
+    local diagnostics={
+        collectAttempts=0,collectActivations=0,collectCashConfirmed=0,collectFailures=0,
+        purchaseDispatches=0,purchaseSuccesses=0,purchaseFailures=0,purchaseDeferred=0,purchaseBlocked=0,
+        physicalApproaches=0,approachSuccesses=0,approachFailures=0,launchGuards=0,noclipApplied=0,
+        lastPurchaseReason=nil,lastPurchaseName=nil,lastPurchasePrice=nil,lastPurchaseCash=nil,
+        lastPurchaseDistance=nil,lastPurchaseActor=nil,lastPurchaseKind=nil,lastBlockEvidence=nil,
+    }
+
+    local function lower(v) return tostring(v or ""):lower() end
+    local function compact(v) return lower(v):gsub("[^%w]","") end
+    local function waitStep(seconds)
+        if task and task.wait then task.wait(seconds or 0) else wait(seconds or 0) end
+    end
+    local function outcome(status,reason,attempted,extra)
+        local result={status=status,reason=reason,attempted=attempted==true}
+        for k,v in pairs(extra or {}) do result[k]=v end
+        return status=="success",result
+    end
+    local function markCurrency(kind,amount)
+        local env=context.SHARED_ENV
+        local fn=env and env.__VYRS_TYCOON_CURRENCY_MARK
+        if type(fn)=="function" then pcall(fn,kind,amount) end
+    end
+
+    -- High-confidence commercial language only. Deliberately excludes bare
+    -- "rbx" and bare "premium", which are common in unrelated Roblox metadata.
+    local function explicitPaidText(value)
+        local text=lower(value)
+        if text=="" then return false end
+        if text:find("rbxasset",1,true) or text:find("rbxthumb",1,true) then return false end
+        return text:find("robux",1,true)~=nil
+            or text:find("gamepass",1,true)~=nil
+            or text:find("game pass",1,true)~=nil
+            or text:find("developer product",1,true)~=nil
+            or text:find("watch ad",1,true)~=nil
+            or text:find("rewarded ad",1,true)~=nil
+            or text:find("rewarded video",1,true)~=nil
+            or text:find("premium purchase",1,true)~=nil
+            or text:find("premium only",1,true)~=nil
+            or text:match("%f[%w]r%$%s*%d")~=nil
+    end
+
+    local function truthyPaidValue(value)
+        if value==true then return true end
+        if type(value)=="number" then return value>0 end
+        if type(value)=="string" then
+            local c=compact(value)
+            return c=="true" or c=="yes" or c=="paid" or c=="premium" or c=="robux"
+        end
+        return false
+    end
+
+    local function metadataEvidence(object)
+        if not object then return nil end
+        local name=lower(object.Name)
+        if explicitPaidText(name) then return "name:"..tostring(object.Name) end
+
+        if object:IsA("ProximityPrompt") then
+            if explicitPaidText(object.ActionText) then return "prompt-action:"..tostring(object.ActionText) end
+            if explicitPaidText(object.ObjectText) then return "prompt-object:"..tostring(object.ObjectText) end
+        elseif object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+            if explicitPaidText(object.Text) then return "text:"..tostring(object.Text) end
+        elseif object:IsA("IntValue") or object:IsA("NumberValue") or object:IsA("StringValue") or object:IsA("BoolValue") then
+            local key=compact(object.Name)
+            local ok,value=pcall(function() return object.Value end)
+            if ok then
+                if (key=="gamepassid" or key=="productid" or key=="developerproductid" or key=="devproductid")
+                    and tonumber(value) and tonumber(value)>0 then
+                    return object.Name.."="..tostring(value)
+                end
+                if (key=="gamepass" or key=="paid" or key=="robux" or key=="premiumonly") and truthyPaidValue(value) then
+                    return object.Name.."="..tostring(value)
+                end
+                if type(value)=="string" and explicitPaidText(value) then return object.Name.."="..value end
+            end
+        end
+
+        local ok,attrs=pcall(function() return object:GetAttributes() end)
+        if ok and type(attrs)=="table" then
+            for key,value in pairs(attrs) do
+                local k=compact(key)
+                if (k=="gamepassid" or k=="productid" or k=="developerproductid" or k=="devproductid")
+                    and tonumber(value) and tonumber(value)>0 then
+                    return "attr:"..tostring(key).."="..tostring(value)
+                end
+                if (k=="gamepass" or k=="paid" or k=="robux" or k=="premiumonly") and truthyPaidValue(value) then
+                    return "attr:"..tostring(key).."="..tostring(value)
+                end
+                if type(value)=="string" and explicitPaidText(value) then
+                    return "attr:"..tostring(key).."="..value
+                end
+            end
+        end
+        return nil
+    end
+
+    local function paidEvidence(button)
+        if not button then return "missing-button" end
+        if button.paidPurchase==true then return "scanner:paidPurchase" end
+        local direct={button.object,button.activation,button.prompt,button.clickDetector,button.touchPart,button.part}
+        for _,object in ipairs(direct) do
+            local evidence=metadataEvidence(object)
+            if evidence then return evidence end
+        end
+        local origin=button.object
+        if not origin or not origin.Parent then return nil end
+        local queue={origin}
+        local cursor=1
+        local inspected=0
+        while cursor<=#queue and inspected<MAX_EVIDENCE_INSPECT do
+            local current=queue[cursor]
+            cursor=cursor+1
+            for _,child in ipairs(current:GetChildren()) do
+                inspected=inspected+1
+                local evidence=metadataEvidence(child)
+                if evidence then return evidence end
+                if inspected<MAX_EVIDENCE_INSPECT and #child:GetChildren()>0 then table.insert(queue,child) end
+                if inspected>=MAX_EVIDENCE_INSPECT then break end
+            end
+        end
+        return nil
+    end
+
+    local function firePrompt(prompt)
+        if not prompt or not prompt.Parent or type(fireproximityprompt)~="function" then return false end
+        return pcall(function() fireproximityprompt(prompt) end)
+    end
+    local function fireClick(click)
+        if not click or not click.Parent or type(fireclickdetector)~="function" then return false end
+        return pcall(function() fireclickdetector(click) end)
+    end
+    local function fireTouch(actor,target)
+        if not actor or not actor.Parent or not target or not target.Parent or type(firetouchinterest)~="function" then return false end
+        return pcall(function()
+            firetouchinterest(actor,target,0)
+            waitStep(0.045)
+            firetouchinterest(actor,target,1)
+        end)
+    end
+
+    local function setCollectorNoClip(target)
+        if not target or not target.Parent or not target:IsA("BasePart") then return end
+        local size=target.Size
+        if size.X>50 or size.Z>50 or size.Y>12 then return end
+        if not noclipStates[target] then noclipStates[target]={original=target.CanCollide} end
+        if target.CanCollide then
+            pcall(function() target.CanCollide=false end)
+            diagnostics.noclipApplied=diagnostics.noclipApplied+1
+        end
+    end
+    local function guardCharacter(root,beforeCFrame,beforeLinear,beforeAngular)
+        if not root or not root.Parent then return end
+        local current=root.AssemblyLinearVelocity
+        local launched=current.Y>math.max(42,beforeLinear.Y+24) or current.Magnitude>beforeLinear.Magnitude+70
+        if not launched then return end
+        diagnostics.launchGuards=diagnostics.launchGuards+1
+        pcall(function()
+            if root.Position.Y-beforeCFrame.Position.Y>6 then root.CFrame=beforeCFrame end
+            root.AssemblyLinearVelocity=beforeLinear
+            root.AssemblyAngularVelocity=beforeAngular
+        end)
+    end
+
+    local function activationAlive(entry)
+        return (entry.prompt and entry.prompt.Parent) or (entry.clickDetector and entry.clickDetector.Parent) or (entry.touchPart and entry.touchPart.Parent)
+    end
+    local function refreshInteraction(entry)
+        if not entry or not entry.object or not entry.object.Parent then return false end
+        if activationAlive(entry) then return true end
+        entry.prompt=nil; entry.clickDetector=nil; entry.touchPart=nil; entry.activation=nil
+        local queue={entry.object}
+        local cursor=1
+        local inspected=0
+        while cursor<=#queue and inspected<48 do
+            local current=queue[cursor]
+            cursor=cursor+1
+            if current:IsA("ProximityPrompt") and not entry.prompt then entry.prompt=current; entry.activation=current
+            elseif current:IsA("ClickDetector") and not entry.clickDetector then entry.clickDetector=current; entry.activation=current
+            elseif current:IsA("TouchTransmitter") and current.Parent and current.Parent:IsA("BasePart") and not entry.touchPart then
+                entry.touchPart=current.Parent; entry.activation=current
+            end
+            if activationAlive(entry) then return true end
+            for _,child in ipairs(current:GetChildren()) do
+                inspected=inspected+1
+                if inspected<=48 then table.insert(queue,child) end
+                if inspected>=48 then break end
+            end
+        end
+        return false
+    end
+
+    local function purchaseKind(button)
+        if button and button.prompt and button.prompt.Parent then return "prompt" end
+        if button and button.clickDetector and button.clickDetector.Parent then return "click" end
+        if button and button.touchPart and button.touchPart.Parent then return "touch" end
+        return "none"
+    end
+    local function purchasePart(button)
+        if not button then return nil end
+        if button.touchPart and button.touchPart.Parent then return button.touchPart end
+        if button.part and button.part.Parent then return button.part end
+        if button.prompt and button.prompt.Parent then
+            local p=button.prompt.Parent
+            if p:IsA("BasePart") then return p end
+            if p:IsA("Attachment") and p.Parent and p.Parent:IsA("BasePart") then return p.Parent end
+        end
+        if button.clickDetector and button.clickDetector.Parent and button.clickDetector.Parent:IsA("BasePart") then return button.clickDetector.Parent end
+        return nil
+    end
+    local function purchaseDistance(root,button)
+        local part=purchasePart(button)
+        return root and part and (part.Position-root.Position).Magnitude or nil
+    end
+
+    local function priceLikeName(value)
+        local c=compact(value)
+        return c:find("price",1,true) or c:find("cost",1,true) or c:find("amount",1,true) or c:find("required",1,true)
+    end
+    local function focusedSignature(button)
+        local origin=button and button.object
+        if not origin or not origin.Parent then return nil end
+        local pieces={"name="..tostring(origin.Name)}
+        if button.prompt and button.prompt.Parent then
+            table.insert(pieces,"prompt="..tostring(button.prompt.ActionText).."|"..tostring(button.prompt.ObjectText))
+        end
+        local queue={origin}
+        local cursor=1
+        local inspected=0
+        while cursor<=#queue and inspected<SIGNATURE_INSPECT do
+            local current=queue[cursor]
+            cursor=cursor+1
+            inspected=inspected+1
+            if current:IsA("TextLabel") or current:IsA("TextButton") then
+                local text=tostring(current.Text or "")
+                if priceLikeName(current.Name) or text:find("$",1,true) or text:find("£",1,true) or text:find("€",1,true) or text:find("¥",1,true) then
+                    table.insert(pieces,current.Name.."="..text)
+                end
+            elseif current:IsA("IntValue") or current:IsA("NumberValue") or current:IsA("StringValue") then
+                if priceLikeName(current.Name) then table.insert(pieces,current.Name.."="..tostring(current.Value)) end
+            end
+            for _,child in ipairs(current:GetChildren()) do
+                if #queue<SIGNATURE_INSPECT*2 then table.insert(queue,child) end
+            end
+        end
+        table.sort(pieces)
+        return table.concat(pieces,"\31")
+    end
+    local function purchasedAncestor(object)
+        local current=object and object.Parent
+        while current and current~=workspace do
+            local name=compact(current.Name)
+            if name=="purchased" or name=="purchasedobjects" or name=="bought" or name=="owneditems" then return true end
+            current=current.Parent
+        end
+        return false
+    end
+    local function capture(button)
+        return {
+            object=button.object,
+            parent=button.object and button.object.Parent or nil,
+            activation=button.activation,
+            cash=tonumber(context.getCash()),
+            price=math.max(0,tonumber(button.price) or 0),
+            sig=focusedSignature(button),
+        }
+    end
+    local function applied(button,before)
+        local object=before.object
+        if not object or not object.Parent then return true,"object-gone" end
+        if purchasedAncestor(object) then return true,"moved-to-owned" end
+        if before.parent and object.Parent~=before.parent then return true,"reparented" end
+        if before.activation and not before.activation.Parent then return true,"activation-gone" end
+        if before.sig then
+            local nowSig=focusedSignature(button)
+            if nowSig and nowSig~=before.sig then return true,"pad-changed" end
+        end
+        local nowCash=tonumber(context.getCash())
+        if before.cash and nowCash and before.price>0 then
+            local spent=before.cash-nowCash
+            local tolerance=math.max(3,before.price*0.55)
+            if spent>0 and (math.abs(spent-before.price)<=tolerance or spent>=before.price*0.75) then
+                return true,"cash-spend-matched"
+            end
+        end
+        return false,nil
+    end
+    local function verify(button,before,timeout)
+        local deadline=os.clock()+(timeout or CONFIRM_TIMEOUT)
+        repeat
+            local ok,reason=applied(button,before)
+            if ok then return true,reason end
+            waitStep(0.07)
+        until os.clock()>=deadline
+        return applied(button,before)
+    end
+
+    local function actorList(root,names)
+        local list={}
+        local seen={}
+        local character=context.LOCAL_PLAYER and context.LOCAL_PLAYER.Character
+        local function add(part)
+            if part and part.Parent and part:IsA("BasePart") and not seen[part] then seen[part]=true; table.insert(list,part) end
+        end
+        if character then for _,name in ipairs(names) do add(character:FindFirstChild(name)) end end
+        add(root)
+        return list
+    end
+    local function activate(button,root)
+        if button.prompt and button.prompt.Parent then diagnostics.lastPurchaseActor="ProximityPrompt"; return firePrompt(button.prompt) end
+        if button.clickDetector and button.clickDetector.Parent then diagnostics.lastPurchaseActor="ClickDetector"; return fireClick(button.clickDetector) end
+        local target=button.touchPart
+        if not target or not target.Parent then return false end
+        local list=actorList(root,PURCHASE_ACTORS)
+        if #list==0 then return false end
+        local key=button.activation or button.object or target
+        local index=actorIndexes[key] or 1
+        if index>#list then index=1 end
+        local actor=list[index]
+        actorIndexes[key]=(index%#list)+1
+        diagnostics.lastPurchaseActor=actor.Name
+        return fireTouch(actor,target)
+    end
+
+    local function approach(button,before)
+        if CONFIG.autopilotEnabled~=true then return false,"autopilot-disabled",false end
+        local character=context.LOCAL_PLAYER and context.LOCAL_PLAYER.Character
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        local root=context.getLocalRoot()
+        local target=purchasePart(button)
+        if not humanoid or humanoid.Health<=0 or not root or not target then return false,"approach-unavailable",false end
+        local distance=(target.Position-root.Position).Magnitude
+        if distance<=APPROACH_DISTANCE then return false,"already-near",false end
+        if distance>APPROACH_MAX_DISTANCE then return false,"too-far",false end
+        if humanoid.MoveDirection.Magnitude>0.15 then return false,"player-moving",false end
+
+        diagnostics.physicalApproaches=diagnostics.physicalApproaches+1
+        diagnostics.lastPurchaseActor="Humanoid.MoveTo"
+        pcall(function() humanoid:MoveTo(target.Position) end)
+        local deadline=os.clock()+math.min(APPROACH_TIMEOUT,1.2+distance/12)
+        repeat
+            local success,reason=applied(button,before)
+            if success then diagnostics.approachSuccesses=diagnostics.approachSuccesses+1; return true,reason,true end
+            if not root.Parent or not target.Parent or humanoid.Health<=0 then break end
+            if (target.Position-root.Position).Magnitude<=APPROACH_DISTANCE then break end
+            waitStep(0.08)
+        until os.clock()>=deadline
+
+        if root.Parent and target.Parent and (target.Position-root.Position).Magnitude<=APPROACH_DISTANCE then
+            local fired=activate(button,root)
+            if fired then
+                local success,reason=verify(button,before,1.15)
+                if success then diagnostics.approachSuccesses=diagnostics.approachSuccesses+1; return true,reason,true end
+            end
+        end
+        diagnostics.approachFailures=diagnostics.approachFailures+1
+        return false,"approach-not-confirmed",true
+    end
+
+    local function buyButton(_,button)
+        diagnostics.lastPurchaseReason=nil
+        diagnostics.lastBlockEvidence=nil
+        diagnostics.lastPurchaseName=button and (button.name or (button.object and button.object.Name)) or "?"
+        diagnostics.lastPurchasePrice=tonumber(button and button.price)
+        diagnostics.lastPurchaseCash=tonumber(context.getCash())
+        diagnostics.lastPurchaseActor=nil
+        diagnostics.lastPurchaseKind=purchaseKind(button)
+
+        if not button or button.automationAllowed~=true then
+            diagnostics.purchaseDeferred=diagnostics.purchaseDeferred+1
+            diagnostics.lastPurchaseReason="not-authorised"
+            return outcome("deferred","not-authorised",false)
+        end
+        local evidence=paidEvidence(button)
+        if evidence then
+            diagnostics.purchaseBlocked=diagnostics.purchaseBlocked+1
+            diagnostics.lastPurchaseReason="blocked-paid-context"
+            diagnostics.lastBlockEvidence=evidence
+            return outcome("blocked","blocked-paid-context",false,{permanent=true,evidence=evidence})
+        end
+        if not refreshInteraction(button) then
+            diagnostics.purchaseFailures=diagnostics.purchaseFailures+1
+            diagnostics.lastPurchaseReason="stale-interaction"
+            return outcome("failed","stale-interaction",false)
+        end
+
+        local cash=tonumber(context.getCash())
+        local price=math.max(0,tonumber(button.price) or 0)
+        if cash==nil and price>0 then
+            diagnostics.purchaseDeferred=diagnostics.purchaseDeferred+1
+            diagnostics.lastPurchaseReason="cash-unresolved"
+            return outcome("deferred","cash-unresolved",false)
+        end
+        if cash~=nil and price>cash then
+            diagnostics.purchaseDeferred=diagnostics.purchaseDeferred+1
+            diagnostics.lastPurchaseReason="unaffordable"
+            return outcome("deferred","unaffordable",false)
+        end
+        local root=context.getLocalRoot()
+        if not root then
+            diagnostics.purchaseDeferred=diagnostics.purchaseDeferred+1
+            diagnostics.lastPurchaseReason="character-unavailable"
+            return outcome("deferred","character-unavailable",false)
+        end
+
+        diagnostics.purchaseDispatches=diagnostics.purchaseDispatches+1
+        diagnostics.lastPurchaseDistance=purchaseDistance(root,button)
+        markCurrency("buy",price)
+        local before=capture(button)
+        local fired=activate(button,root)
+        if fired then
+            local success,reason=verify(button,before,CONFIRM_TIMEOUT)
+            if success then
+                diagnostics.purchaseSuccesses=diagnostics.purchaseSuccesses+1
+                diagnostics.lastPurchaseReason=reason or "confirmed"
+                return outcome("success",reason or "confirmed",true)
+            end
+        end
+
+        local distance=purchaseDistance(root,button)
+        if distance and distance>APPROACH_DISTANCE then
+            local success,reason,attempted=approach(button,before)
+            if success then
+                diagnostics.purchaseSuccesses=diagnostics.purchaseSuccesses+1
+                diagnostics.lastPurchaseReason=reason or "confirmed"
+                return outcome("success",reason or "confirmed",true)
+            end
+            if not attempted and (reason=="player-moving" or reason=="autopilot-disabled" or reason=="too-far" or reason=="approach-unavailable") then
+                diagnostics.purchaseDeferred=diagnostics.purchaseDeferred+1
+                diagnostics.lastPurchaseReason=reason
+                return outcome("deferred",reason,fired==true)
+            end
+            diagnostics.lastPurchaseReason=reason
+        else
+            diagnostics.lastPurchaseReason=fired and "not-confirmed" or "activation-unavailable"
+        end
+
+        diagnostics.purchaseFailures=diagnostics.purchaseFailures+1
+        return outcome("failed",diagnostics.lastPurchaseReason or "not-confirmed",fired==true)
+    end
+
+    local function collectActor(root)
+        local list=actorList(root,COLLECT_ACTORS)
+        return list[1] or root
+    end
+    local function collectorTouch(root,target)
+        if not root or not target then return false end
+        setCollectorNoClip(target)
+        local beforeCFrame=root.CFrame
+        local beforeLinear=root.AssemblyLinearVelocity
+        local beforeAngular=root.AssemblyAngularVelocity
+        local actor=collectActor(root)
+        local ok=fireTouch(actor,target)
+        guardCharacter(root,beforeCFrame,beforeLinear,beforeAngular)
+        if task and task.delay then
+            task.delay(0.08,function() guardCharacter(root,beforeCFrame,beforeLinear,beforeAngular) end)
+            task.delay(0.2,function() guardCharacter(root,beforeCFrame,beforeLinear,beforeAngular) end)
+        end
+        return ok
+    end
+
+    local function collectNearby(_,data)
+        if not data or data.automationAllowed~=true or not data.drops or #data.drops==0 then return 0 end
+        local root=context.getLocalRoot()
+        if not root then return 0 end
+        local total=#data.drops
+        if collectCursor>total then collectCursor=1 end
+        local now=os.clock()
+        local checked=0
+        local index=collectCursor
+        while checked<total do
+            local drop=data.drops[index]
+            checked=checked+1
+            index=(index%total)+1
+            if drop and drop.object and drop.object.Parent and refreshInteraction(drop) then
+                local key=drop.activation or drop.touchPart or drop.prompt or drop.clickDetector or drop.object
+                if now>=(collectCooldowns[key] or 0) then
+                    diagnostics.collectAttempts=diagnostics.collectAttempts+1
+                    local before=tonumber(context.getCash())
+                    markCurrency("collect")
+                    local ok=false
+                    if drop.prompt and drop.prompt.Parent then ok=firePrompt(drop.prompt)
+                    elseif drop.clickDetector and drop.clickDetector.Parent then ok=fireClick(drop.clickDetector)
+                    elseif drop.touchPart and drop.touchPart.Parent then ok=collectorTouch(root,drop.touchPart) end
+                    collectCooldowns[key]=now+COLLECT_COOLDOWN
+                    if ok then
+                        diagnostics.collectActivations=diagnostics.collectActivations+1
+                        waitStep(0.18)
+                        local after=tonumber(context.getCash())
+                        if before and after and after>before then diagnostics.collectCashConfirmed=diagnostics.collectCashConfirmed+1 end
+                        collectCursor=index
+                        return 1
+                    end
+                    diagnostics.collectFailures=diagnostics.collectFailures+1
+                    collectCursor=index
+                    return 0
+                end
+            end
+        end
+        collectCursor=index
+        return 0
+    end
+
+    local function cleanup()
+        for part,state in pairs(noclipStates) do
+            if part and part.Parent and state then pcall(function() part.CanCollide=state.original end) end
+            noclipStates[part]=nil
+        end
+    end
+    local function getStatus()
+        local copy={}
+        for k,v in pairs(diagnostics) do copy[k]=v end
+        return copy
+    end
+
+    return {buyButton=buyButton,collectNearby=collectNearby,getStatus=getStatus,cleanup=cleanup}
 end
