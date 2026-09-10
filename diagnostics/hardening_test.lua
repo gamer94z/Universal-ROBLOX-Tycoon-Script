@@ -58,7 +58,7 @@ if not patch('if type%(readfile%) == "function" then\n\t\tfor _, path in ipairs%
 -- as a purchase candidate while retaining the scanner's premium/ad filters.
 local scannerCompat=[[if name == "scanner" and source then
         local patchedScanner, scannerPatchCount = source:gsub(
-            "if familySize>=2 or hinted or r%%.price==0 then",
+            "if familySize>=2 or hinted or r%.price==0 then",
             "if familySize>=2 or hinted or r.price==0 or (verified and (r.depth or 99)<=2) then"
         )
         if scannerPatchCount == 1 then
