@@ -37,6 +37,13 @@ return function(context)
 		end
 	end
 
+	local function buttonAvailable(button)
+		return button
+			and button.affordable
+			and not button.paidPurchase
+			and (not button.blockedUntil or button.blockedUntil <= os.clock())
+	end
+
 	local function getDistance(entry, root)
 		if not entry or not entry.part or not root then
 			return math.huge
@@ -52,7 +59,7 @@ return function(context)
 		local best
 		local bestDistance = math.huge
 		for _, button in ipairs(data.buttons) do
-			if button.affordable and not button.paidPurchase and button.part and button.part.Parent then
+			if buttonAvailable(button) and button.part and button.part.Parent then
 				local distance = getDistance(button, root)
 				if distance < bestDistance then
 					bestDistance = distance
@@ -71,7 +78,7 @@ return function(context)
 		local best
 		local bestPrice = math.huge
 		for _, button in ipairs(data.buttons) do
-			if button.affordable and not button.paidPurchase then
+			if buttonAvailable(button) then
 				local price = button.price or 0
 				if price < bestPrice then
 					bestPrice = price
@@ -90,7 +97,7 @@ return function(context)
 		local best
 		local bestPrice = -math.huge
 		for _, button in ipairs(data.buttons) do
-			if button.affordable and not button.paidPurchase then
+			if buttonAvailable(button) then
 				local price = button.price or 0
 				if price > bestPrice then
 					bestPrice = price
@@ -135,7 +142,7 @@ return function(context)
 		local seen = {}
 		for _, button in ipairs(data.buttons) do
 			local object = button.object
-			if button.affordable and not button.paidPurchase and object and object.Parent then
+			if buttonAvailable(button) and object and object.Parent then
 				seen[object] = true
 				local highlight = highlights[object]
 				if not highlight then
@@ -213,8 +220,6 @@ return function(context)
 				and nearest
 				and nearest.object == object
 
-			-- The waypoint already identifies the nearest target. Rendering the
-			-- normal button label on that same object creates two stacked NEXT tags.
 			if isWaypointTarget then
 				removeLabel(object)
 			elseif button.part and button.part.Parent and object then
