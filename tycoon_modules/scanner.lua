@@ -1,6 +1,7 @@
 -- Performance-hardening scanner wrapper.
 -- Adds an adaptive HUD currency resolver on top of the structural hardening scanner.
 -- It can learn anonymous numeric wallet counters without mistaking rates/prices/ammo for cash.
+-- Player-list cash is accepted only when the row is tied to the local player.
 
 local BASE_URL = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/87237a049e9cb6804265bda54d04c9d7605a1d0b/tycoon_modules/scanner.lua"
 
@@ -20,10 +21,11 @@ return function(context)
 	local observations = setmetatable({}, { __mode = "k" })
 	local lastSearch = -math.huge
 	local SEARCH_COOLDOWN = 1.5
-	local MAX_GUI_INSPECT = 420
+	local MAX_GUI_INSPECT = 520
 	local lastPrintedSource
 
 	local function lower(value) return tostring(value or ""):lower() end
+	local function compact(value) return lower(value):gsub("[^%w]", "") end
 	local function hasAny(text, words)
 		text = lower(text)
 		for _, word in ipairs(words) do
@@ -37,8 +39,7 @@ return function(context)
 	local NON_CASH_WORDS = {
 		"gem", "diamond", "crystal", "token", "ticket", "star", "xp", "level",
 		"ammo", "bullet", "magazine", "weapon", "hotbar", "inventory", "health", "hp",
-		"kills", "deaths", "timer", "timeleft", "countdown", "players", "playerlist",
-		"leaderboard", "ping", "fps", "streak", "round", "wave"
+		"kills", "deaths", "timer", "timeleft", "countdown", "ping", "fps", "streak", "round", "wave"
 	}
 	local CASH_STRONG = { "cash", "money", "balance", "wallet", "fund" }
 	local CASH_WEAK = { "coin", "credit", "currency", "gold" }
@@ -81,7 +82,7 @@ return function(context)
 		local pieces = {}
 		local current = object
 		local depth = 0
-		while current and depth <= 6 do
+		while current and depth <= 7 do
 			table.insert(pieces, tostring(current.Name or ""))
 			current = current.Parent
 			depth = depth + 1
@@ -89,13 +90,51 @@ return function(context)
 		return lower(table.concat(pieces, " "))
 	end
 
+	local function textMatchesLocalPlayer(value)
+		local player = context.LOCAL_PLAYER
+		if not player then return false end
+		local candidate = compact(value)
+		if candidate == "" then return false end
+		local username = compact(player.Name)
+		local displayName = compact(player.DisplayName)
+		local userId = tostring(player.UserId)
+		return candidate == username
+			or (displayName ~= "" and candidate == displayName)
+			or candidate == userId
+			or (#username >= 4 and candidate:find(username, 1, true) ~= nil)
+	end
+
+	local function ancestorContainsLocalPlayer(object)
+		local current = object and object.Parent
+		local depth = 0
+		while current and depth <= 6 do
+			local inspected = 0
+			local queue = { current }
+			local cursor = 1
+			while cursor <= #queue and inspected < 48 do
+				local node = queue[cursor]
+				cursor = cursor + 1
+				if node ~= object and (node:IsA("TextLabel") or node:IsA("TextButton") or node:IsA("TextBox")) then
+					if textMatchesLocalPlayer(node.Text) then return true end
+				end
+				if textMatchesLocalPlayer(node.Name) then return true end
+				for _, child in ipairs(node:GetChildren()) do
+					inspected = inspected + 1
+					if inspected <= 48 then table.insert(queue, child) end
+					if inspected >= 48 then break end
+				end
+			end
+			current = current.Parent
+			depth = depth + 1
+		end
+		return false
+	end
+
 	local function hasImageSibling(object)
 		local parent = object and object.Parent
 		if not parent then return false end
 		for _, child in ipairs(parent:GetChildren()) do
-			if child ~= object and (child:IsA("ImageLabel") or child:IsA("ImageButton")) and child.Visible ~= false then
-				return true
-			end
+			if child ~= object and (child:IsA("ImageLabel") or child:IsA("ImageButton")) and child.Visible ~= false then return true end
 		end
 		return false
 	end
@@ -135,12 +174,17 @@ return function(context)
 		local ctx = contextText(object)
 		if hasAny(ctx, RATE_WORDS) or hasAny(ctx, PRICE_WORDS) or hasAny(ctx, NON_CASH_WORDS) then return nil end
 
+		local inPlayerList = ctx:find("playerlist", 1, true) ~= nil or ctx:find("leaderboard", 1, true) ~= nil
+		local localPlayerRow = inPlayerList and ancestorContainsLocalPlayer(object) or false
+		if inPlayerList and not localPlayerRow then return nil end
+
 		local score = 0
 		local name = lower(object.Name)
 		local symbol = lowered:find("$",1,true) or lowered:find("£",1,true) or lowered:find("€",1,true) or lowered:find("¥",1,true)
 		if symbol then score = score + 45 end
 		if hasAny(name, CASH_STRONG) then score = score + 100 elseif hasAny(name, CASH_WEAK) then score = score + 48 end
 		if hasAny(ctx, CASH_STRONG) then score = score + 90 elseif hasAny(ctx, CASH_WEAK) then score = score + 42 end
+		if localPlayerRow then score = score + 260 end
 
 		local imageSibling = hasImageSibling(object)
 		if imageSibling then score = score + 24 end
@@ -154,14 +198,13 @@ return function(context)
 		if obs.upward > 0 then score = score + math.min(45, obs.upward * 15) end
 		if os.clock() - obs.lastChange <= 4 then score = score + 25 end
 
-		-- Anonymous bare counters need at least two HUD-like clues or observed activity.
-		if not symbol and not hasAny(name, CASH_STRONG) and not hasAny(ctx, CASH_STRONG) then
+		if not symbol and not hasAny(name, CASH_STRONG) and not hasAny(ctx, CASH_STRONG) and not localPlayerRow then
 			local plausible = (imageSibling and greenDominant(object)) or obs.changes > 0
 			if not plausible then return nil end
 		end
 
 		if score < 45 then return nil end
-		return { object = object, value = value, score = score }
+		return { object = object, value = value, score = score, localPlayerRow = localPlayerRow }
 	end
 
 	local function scanGui()
