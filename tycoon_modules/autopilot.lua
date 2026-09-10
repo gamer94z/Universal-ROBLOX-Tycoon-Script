@@ -4,6 +4,9 @@ return function(context)
 
 	local REBIRTH_WORDS = { "rebirth", "prestige", "ascend", "restart tycoon", "reset tycoon" }
 	local BLOCKED_WORDS = { "robux", "gamepass", "game pass", "premium", "developer product", "watch ad", "video ad", "rewarded ad" }
+	local STREAM_REQUEST_INTERVAL = 4
+	local STREAM_DISTANCE = 85
+	local STREAM_TIMEOUT = 1.5
 
 	local state = {
 		startedAt = nil,
@@ -15,6 +18,12 @@ return function(context)
 		rebirthAttempts = 0,
 		rebirthSuccesses = 0,
 		recoveries = 0,
+		tycoonPosition = nil,
+		lastStreamRequest = -math.huge,
+		streamBusy = false,
+		streamRequests = 0,
+		streamSuccesses = 0,
+		streamFailures = 0,
 	}
 
 	local function lower(value)
@@ -31,6 +40,48 @@ return function(context)
 			if text:find(word, 1, true) then return true end
 		end
 		return false
+	end
+
+	local function getRootPosition(root)
+		if not root or not root.Parent then return nil end
+		if root:IsA("BasePart") then return root.Position end
+		if root:IsA("Model") then
+			local ok, pivot = pcall(function() return root:GetPivot() end)
+			if ok and pivot then return pivot.Position end
+		end
+		local part = root:FindFirstChildWhichIsA("BasePart", true)
+		return part and part.Position or nil
+	end
+
+	local function rememberTycoonPosition(data)
+		local position = data and getRootPosition(data.root)
+		if position then state.tycoonPosition = position end
+		return state.tycoonPosition
+	end
+
+	local function keepTycoonStreamed(data)
+		local position = rememberTycoonPosition(data)
+		if not CONFIG.enabled or not position or state.streamBusy then return end
+		if workspace.StreamingEnabled ~= true then return end
+		if type(LOCAL_PLAYER.RequestStreamAroundAsync) ~= "function" then return end
+
+		local localRoot = context.getLocalRoot()
+		if not localRoot or (localRoot.Position - position).Magnitude < STREAM_DISTANCE then return end
+
+		local now = os.clock()
+		if now - state.lastStreamRequest < STREAM_REQUEST_INTERVAL then return end
+		state.lastStreamRequest = now
+		state.streamBusy = true
+		state.streamRequests = state.streamRequests + 1
+
+		task.spawn(function()
+			local ok = pcall(function()
+				LOCAL_PLAYER:RequestStreamAroundAsync(position, STREAM_TIMEOUT)
+			end)
+			if ok then state.streamSuccesses = state.streamSuccesses + 1
+			else state.streamFailures = state.streamFailures + 1 end
+			state.streamBusy = false
+		end)
 	end
 
 	local function affordableCount(data)
@@ -68,6 +119,7 @@ return function(context)
 	end
 
 	local function getCollectInterval(data, brainStatus)
+		keepTycoonStreamed(data)
 		local drops = #(data and data.drops or {})
 		if drops == 0 then return 1 end
 		local bottleneck = brainStatus and brainStatus.bottleneck
@@ -98,6 +150,7 @@ return function(context)
 	local function updateRecovery(data)
 		local character = LOCAL_PLAYER.Character
 		local root = context.getLocalRoot()
+		rememberTycoonPosition(data)
 		if character and state.lastCharacterSeen and character ~= state.lastCharacterSeen then
 			state.recoveries = state.recoveries + 1
 		end
@@ -233,12 +286,17 @@ return function(context)
 			rebirthAttempts = state.rebirthAttempts,
 			rebirthSuccesses = state.rebirthSuccesses,
 			recoveries = state.recoveries,
+			streamRequests = state.streamRequests,
+			streamSuccesses = state.streamSuccesses,
+			streamFailures = state.streamFailures,
+			streamBusy = state.streamBusy,
 		}
 	end
 
 	return {
 		noteEnabled = noteEnabled,
 		updateRecovery = updateRecovery,
+		keepTycoonStreamed = keepTycoonStreamed,
 		getBuyInterval = getBuyInterval,
 		getCollectInterval = getCollectInterval,
 		updateCompletion = updateCompletion,
