@@ -142,7 +142,7 @@ local function getCashObject()
 			if item:IsA("IntValue") or item:IsA("NumberValue") or item:IsA("StringValue") then
 				if tonumber(item.Value) ~= nil then
 					local score = cashNameScore(item)
-					if not bestScore or score > bestScore then best, bestScore = item, score end
+					if score > -math.huge and (not bestScore or score > bestScore) then best, bestScore = item, score end
 				end
 			end
 		end
@@ -346,7 +346,6 @@ local function updateCashState()
 				if button.affordable then affordable = affordable + 1 elseif button.locked then locked = locked + 1 end
 			end
 		end
-	end
 	runtime.data.affordableCount = affordable
 	runtime.data.lockedCount = locked
 end
