@@ -1,5 +1,6 @@
--- 0xVyrs universal tycoon scanner v4
+-- 0xVyrs universal tycoon scanner v4.1
 -- Canonical scanner: explicit ownership, bounded price evidence, no stale button cache.
+-- Internal object names alone are never treated as proof of a paid purchase.
 
 return function(context)
     local CONFIG=context.CONFIG or {}
@@ -79,27 +80,39 @@ return function(context)
         return false
     end
 
+    local function paidKey(name)
+        local key=compact(name)
+        return key=="gamepass" or key=="gamepassid" or key=="productid" or key=="developerproductid"
+            or key=="devproductid" or key=="paid" or key=="robux" or key=="premiumonly"
+            or key=="purchasecurrency" or key=="paymenttype"
+    end
+
     local function paidEvidenceObject(o)
         if not o then return nil end
-        if explicitPaidText(o.Name) then return "name:"..tostring(o.Name) end
+
+        -- Do not use o.Name here. Games frequently name harmless internal parts
+        -- Gamepass/Premium/Robux even when the actual button is a normal cash buy.
         if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
-            if explicitPaidText(o.Text) then return "text:"..tostring(o.Text) end
+            if o.Visible~=false and explicitPaidText(o.Text) then return "visible-text:"..tostring(o.Text) end
         elseif o:IsA("ProximityPrompt") then
-            if explicitPaidText(o.ActionText) then return "prompt-action:"..tostring(o.ActionText) end
-            if explicitPaidText(o.ObjectText) then return "prompt-object:"..tostring(o.ObjectText) end
+            if o.Enabled~=false and explicitPaidText(o.ActionText) then return "prompt-action:"..tostring(o.ActionText) end
+            if o.Enabled~=false and explicitPaidText(o.ObjectText) then return "prompt-object:"..tostring(o.ObjectText) end
         elseif o:IsA("IntValue") or o:IsA("NumberValue") or o:IsA("StringValue") or o:IsA("BoolValue") then
             local key=compact(o.Name)
             local ok,value=pcall(function() return o.Value end)
             if ok then
                 if (key=="gamepassid" or key=="productid" or key=="developerproductid" or key=="devproductid") and tonumber(value) and tonumber(value)>0 then
-                    return o.Name.."="..tostring(value)
+                    return "value:"..o.Name.."="..tostring(value)
                 end
                 if (key=="gamepass" or key=="paid" or key=="robux" or key=="premiumonly") and truthyPaidValue(value) then
-                    return o.Name.."="..tostring(value)
+                    return "value:"..o.Name.."="..tostring(value)
                 end
-                if type(value)=="string" and explicitPaidText(value) then return o.Name.."="..value end
+                if paidKey(key) and type(value)=="string" and explicitPaidText(value) then
+                    return "value:"..o.Name.."="..value
+                end
             end
         end
+
         local ok,attrs=pcall(function() return o:GetAttributes() end)
         if ok and type(attrs)=="table" then
             for key,value in pairs(attrs) do
@@ -110,7 +123,9 @@ return function(context)
                 if (k=="gamepass" or k=="paid" or k=="robux" or k=="premiumonly") and truthyPaidValue(value) then
                     return "attr:"..tostring(key).."="..tostring(value)
                 end
-                if type(value)=="string" and explicitPaidText(value) then return "attr:"..tostring(key).."="..value end
+                if paidKey(k) and type(value)=="string" and explicitPaidText(value) then
+                    return "attr:"..tostring(key).."="..value
+                end
             end
         end
         return nil
@@ -126,6 +141,7 @@ return function(context)
             current=current.Parent
             depth=depth+1
         end
+
         local origin=interaction and interaction.Parent
         if not origin then return nil end
         local queue={origin}
@@ -419,6 +435,7 @@ return function(context)
             selectedByPosition=false,automationAllowed=allowed,safeAutomation=allowed,owned=explicit,
             cash=cash,buttons={},drops={},maxLabels=CONFIG.maxLabels or 12,paidSkipped=0,
             scanMode=mode or "root",rootScore=tonumber(meta and meta.score) or 0}
+
         if allowed then
             local seenActivation={}
             local seenHost={}
@@ -462,14 +479,17 @@ return function(context)
                 end
             end
         end
+
         local affordable,locked=0,0
-        for _,button in ipairs(data.buttons) do if button.affordable then affordable=affordable+1 elseif button.locked then locked=locked+1 end end
+        for _,button in ipairs(data.buttons) do
+            if button.affordable then affordable=affordable+1 elseif button.locked then locked=locked+1 end
+        end
         data.totalButtons=#data.buttons
         data.affordableCount=affordable
         data.lockedCount=locked
         data.progressPercent=0
         data.scanTimeMs=(os.clock()-started)*1000
-        data.debug={scanMode=data.scanMode,scanTimeMs=data.scanTimeMs,snapshotSize=#descendants,rootScore=data.rootScore,ownerSource=data.ownerSource,paidSkipped=data.paidSkipped,moduleVersion="4"}
+        data.debug={scanMode=data.scanMode,scanTimeMs=data.scanTimeMs,snapshotSize=#descendants,rootScore=data.rootScore,ownerSource=data.ownerSource,paidSkipped=data.paidSkipped,moduleVersion="4.1"}
         return data
     end
 
@@ -477,7 +497,7 @@ return function(context)
         return {root=workspace,rootName="Workspace",ownerMatch=false,ownerVerified=false,ownerSource="none",selectedByPosition=false,
             automationAllowed=CONFIG.requireOwnerMatch==false,safeAutomation=CONFIG.requireOwnerMatch==false,owned=false,
             cash=tonumber(context.getCash()),buttons={},drops={},affordableCount=0,lockedCount=0,totalButtons=0,progressPercent=0,
-            scanMode="structural-discovery",scanTimeMs=elapsed,debug={scanMode="structural-discovery",scanTimeMs=elapsed,reason="no-root",worldSnapshotSize=size or 0,moduleVersion="4"}}
+            scanMode="structural-discovery",scanTimeMs=elapsed,debug={scanMode="structural-discovery",scanTimeMs=elapsed,reason="no-root",worldSnapshotSize=size or 0,moduleVersion="4.1"}}
     end
 
     local function scan()
@@ -502,8 +522,13 @@ return function(context)
     end
 
     local function invalidateRoot(root)
-        if not root or root==knownRoot then knownRoot=nil; knownMeta=nil; lastEmpty=nil; lastEmptyAt=-math.huge end
+        if not root or root==knownRoot then
+            knownRoot=nil
+            knownMeta=nil
+            lastEmpty=nil
+            lastEmptyAt=-math.huge
+        end
     end
 
-    return {scan=scan,invalidateRoot=invalidateRoot,parseCompactNumber=parseNumber,moduleVersion="4"}
+    return {scan=scan,invalidateRoot=invalidateRoot,parseCompactNumber=parseNumber,moduleVersion="4.1"}
 end
