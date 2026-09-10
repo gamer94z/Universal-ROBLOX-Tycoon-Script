@@ -1,4 +1,25 @@
 return function()
+	local BLOCKED_PHRASES = {
+		"watch ad",
+		"watch ads",
+		"watch video",
+		"video ad",
+		"video ads",
+		"rewarded ad",
+		"rewarded video",
+		"ad reward",
+		"advertisement",
+		"developer product",
+		"game pass",
+		"gamepass",
+		"robux",
+		"premium purchase",
+	}
+
+	local function lower(value)
+		return tostring(value or ""):lower()
+	end
+
 	local function waitStep(seconds)
 		seconds = seconds or 0
 		if task and task.wait then
@@ -6,6 +27,112 @@ return function()
 		else
 			wait(seconds)
 		end
+	end
+
+	local function hasStandaloneToken(text, token)
+		local normalized = " " .. lower(text):gsub("[^%w]+", " ") .. " "
+		return normalized:find(" " .. token .. " ", 1, true) ~= nil
+	end
+
+	local function textLooksBlocked(text)
+		local clean = lower(text)
+		for _, phrase in ipairs(BLOCKED_PHRASES) do
+			if clean:find(phrase, 1, true) then
+				return true
+			end
+		end
+
+		if hasStandaloneToken(clean, "ad") or hasStandaloneToken(clean, "ads") then
+			return true
+		end
+		if hasStandaloneToken(clean, "advert") or hasStandaloneToken(clean, "advertisement") then
+			return true
+		end
+		if hasStandaloneToken(clean, "rewarded") and hasStandaloneToken(clean, "video") then
+			return true
+		end
+		return false
+	end
+
+	local function instanceLooksBlocked(instance)
+		if not instance then
+			return false
+		end
+
+		if textLooksBlocked(instance.Name) then
+			return true
+		end
+
+		if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
+			if textLooksBlocked(instance.Text) then
+				return true
+			end
+		elseif instance:IsA("ProximityPrompt") then
+			if textLooksBlocked(instance.ActionText) or textLooksBlocked(instance.ObjectText) then
+				return true
+			end
+		end
+
+		local ok, attributes = pcall(function()
+			return instance:GetAttributes()
+		end)
+		if ok and type(attributes) == "table" then
+			for key, value in pairs(attributes) do
+				if textLooksBlocked(key) or (type(value) == "string" and textLooksBlocked(value)) then
+					return true
+				end
+			end
+		end
+
+		return false
+	end
+
+	local function isGenericPurchaseContainer(instance)
+		if not instance then
+			return false
+		end
+		local name = lower(instance.Name):gsub("[^%w]", "")
+		return name == "buttons"
+			or name == "button"
+			or name == "pads"
+			or name == "purchasepads"
+			or name == "purchasebuttons"
+			or name == "buybuttons"
+			or name == "buyitems"
+	end
+
+	local function purchaseLooksBlocked(button)
+		if not button then
+			return true
+		end
+		if button.paidPurchase then
+			return true
+		end
+
+		local object = button.object
+		if not object or not object.Parent then
+			return true
+		end
+
+		if instanceLooksBlocked(object) then
+			return true
+		end
+		for _, descendant in ipairs(object:GetDescendants()) do
+			if instanceLooksBlocked(descendant) then
+				return true
+			end
+		end
+
+		-- Some games keep the interaction inside a Primary/Pad part while the
+		-- identifying text is on the immediately surrounding purchase model.
+		local parent = object.Parent
+		if parent and parent ~= workspace and not isGenericPurchaseContainer(parent) then
+			if instanceLooksBlocked(parent) then
+				return true
+			end
+		end
+
+		return false
 	end
 
 	local function firePrompt(prompt)
@@ -72,17 +199,17 @@ return function()
 		return touched
 	end
 
-	local function activatePart(context, root, part)
+	local function activatePart(context, root, part, allowTeleport)
 		if not part or not part.Parent then
 			return false
 		end
-		if context.CONFIG.touchMode == "Teleport" then
+		if allowTeleport and context.CONFIG.touchMode == "Teleport" then
 			return teleportTouch(root, part)
 		end
 		return touch(root, part)
 	end
 
-	local function activateEntry(context, root, entry)
+	local function activateEntry(context, root, entry, allowTeleport)
 		if not entry then
 			return false
 		end
@@ -93,7 +220,7 @@ return function()
 		if fireClick(entry.clickDetector) then
 			return true
 		end
-		if entry.touchPart and activatePart(context, root, entry.touchPart) then
+		if entry.touchPart and activatePart(context, root, entry.touchPart, allowTeleport) then
 			return true
 		end
 
@@ -124,7 +251,9 @@ return function()
 			local modeAllows = context.CONFIG.collectMode ~= "Collectors"
 				or tostring(drop.name or ""):lower():find("collect", 1, true) ~= nil
 
-			if inRange and modeAllows and activateEntry(context, root, drop) then
+			-- Collection must never move the player's character. Virtual touch,
+			-- prompt and click activation are used even when purchase mode is Teleport.
+			if inRange and modeAllows and activateEntry(context, root, drop, false) then
 				collected = collected + 1
 			end
 		end
@@ -133,14 +262,14 @@ return function()
 	end
 
 	local function buyButton(context, button)
-		if not button or button.paidPurchase or button.automationAllowed ~= true then
+		if not button or button.automationAllowed ~= true or purchaseLooksBlocked(button) then
 			return false
 		end
 		local root = context.getLocalRoot()
 		if not root then
 			return false
 		end
-		return activateEntry(context, root, button)
+		return activateEntry(context, root, button, true)
 	end
 
 	return {
