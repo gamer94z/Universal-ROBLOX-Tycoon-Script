@@ -16,6 +16,8 @@ return function()
 		"premium purchase",
 	}
 
+	local purchaseFailures = setmetatable({}, { __mode = "k" })
+
 	local function lower(value)
 		return tostring(value or ""):lower()
 	end
@@ -175,6 +177,25 @@ return function()
 		end)
 	end
 
+	local function restoreCollectionState(root, state)
+		restoreRootState(root, state)
+		if not task or type(task.delay) ~= "function" then
+			return
+		end
+
+		task.delay(0.05, function()
+			if not root or not root.Parent or not state then
+				return
+			end
+
+			local displaced = (root.Position - state.cframe.Position).Magnitude > 0.35
+			local velocityDelta = (root.AssemblyLinearVelocity - state.linearVelocity).Magnitude > 8
+			if displaced or velocityDelta then
+				restoreRootState(root, state)
+			end
+		end)
+	end
+
 	local function touch(root, part, preserveRootState)
 		if not root or not root.Parent or not part or not part.Parent then
 			return false
@@ -191,7 +212,7 @@ return function()
 		end)
 
 		if preserveRootState then
-			restoreRootState(root, rootState)
+			restoreCollectionState(root, rootState)
 		end
 
 		return ok
@@ -249,6 +270,80 @@ return function()
 		return false
 	end
 
+	local function hasPurchasedAncestor(object)
+		local current = object and object.Parent
+		while current and current ~= workspace do
+			local name = lower(current.Name):gsub("[^%w]", "")
+			if name == "purchased" or name == "purchasedobjects" or name == "bought" or name == "owneditems" then
+				return true
+			end
+			current = current.Parent
+		end
+		return false
+	end
+
+	local function entryHasLiveActivation(entry)
+		return (entry.prompt and entry.prompt.Parent)
+			or (entry.clickDetector and entry.clickDetector.Parent)
+			or (entry.touchPart and entry.touchPart.Parent)
+	end
+
+	local function capturePurchaseState(context, button)
+		local object = button and button.object
+		return {
+			object = object,
+			parent = object and object.Parent or nil,
+			cash = tonumber(context.getCash()),
+			price = tonumber(button and button.price) or 0,
+			hadActivation = entryHasLiveActivation(button) and true or false,
+		}
+	end
+
+	local function purchaseWasApplied(context, button, before)
+		local object = before.object
+		if not object or not object.Parent then
+			return true
+		end
+		if hasPurchasedAncestor(object) then
+			return true
+		end
+		if before.parent and object.Parent ~= before.parent then
+			return true
+		end
+		if before.hadActivation and not entryHasLiveActivation(button) then
+			return true
+		end
+
+		local currentCash = tonumber(context.getCash())
+		if before.cash and currentCash and before.price > 0 and currentCash < before.cash then
+			return true
+		end
+
+		return false
+	end
+
+	local function verifyPurchase(context, button, before)
+		local deadline = os.clock() + 1.15
+		repeat
+			if purchaseWasApplied(context, button, before) then
+				return true
+			end
+			waitStep(0.08)
+		until os.clock() >= deadline
+		return purchaseWasApplied(context, button, before)
+	end
+
+	local function putPurchaseOnCooldown(button)
+		if not button or not button.object then
+			return
+		end
+
+		local failures = (purchaseFailures[button.object] or 0) + 1
+		purchaseFailures[button.object] = failures
+		button.failureCount = failures
+		button.blockedUntil = os.clock() + math.min(12, 1.5 + failures * 1.5)
+	end
+
 	local function collectNearby(context, data)
 		if not data or not data.drops or data.automationAllowed ~= true then
 			return 0
@@ -285,6 +380,9 @@ return function()
 		if not button or button.automationAllowed ~= true then
 			return false
 		end
+		if button.blockedUntil and button.blockedUntil > os.clock() then
+			return false
+		end
 		if purchaseLooksBlocked(button) then
 			button.paidPurchase = true
 			button.affordable = false
@@ -296,7 +394,24 @@ return function()
 		if not root then
 			return false
 		end
-		return activateEntry(context, root, button, true, false)
+
+		local before = capturePurchaseState(context, button)
+		if not activateEntry(context, root, button, true, false) then
+			putPurchaseOnCooldown(button)
+			return false
+		end
+
+		if verifyPurchase(context, button, before) then
+			if button.object then
+				purchaseFailures[button.object] = nil
+			end
+			button.blockedUntil = nil
+			button.failureCount = 0
+			return true
+		end
+
+		putPurchaseOnCooldown(button)
+		return false
 	end
 
 	return {
