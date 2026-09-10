@@ -426,9 +426,9 @@ return function()
 				for _, c in ipairs(group) do
 					if c.inside and c.structuralScore >= 12 and c.priced >= 1 then insideCount = insideCount + 1 insideCandidate = c end
 				end
-				if insideCount == 1 and not insideCandidate.ownerVerified then
+				if insideCount == 1 and insideCandidate and not insideCandidate.ownerVerified then
 					insideCandidate.spatialOwner = true
-					insideCandidate.score = insideCandidate.score + 220
+					insideCandidate.rawScore = (insideCandidate.rawScore or 0) + 220
 				end
 			end
 		end
@@ -436,7 +436,8 @@ return function()
 		table.sort(candidates, function(a,b)
 			if a.ownerVerified ~= b.ownerVerified then return a.ownerVerified end
 			if (a.spatialOwner == true) ~= (b.spatialOwner == true) then return a.spatialOwner == true end
-			if a.score ~= b.score then return a.score > b.score end
+			local aScore, bScore = a.rawScore or 0, b.rawScore or 0
+			if aScore ~= bScore then return aScore > bScore end
 			return rootDepth(a.root) > rootDepth(b.root)
 		end)
 		return candidates
@@ -552,11 +553,8 @@ return function()
 			end
 		end
 
-		-- Collectors are deliberately conservative: cash/collector semantics OR a non-priced touch pad
-		-- sharing the same structural root as several purchase pads.
+		-- Collectors are deliberately conservative: use explicit collector semantics.
 		local seenActivation = {}
-		local purchaseParents = {}
-		for _, button in ipairs(data.buttons) do if button.object and button.object.Parent then purchaseParents[button.object.Parent] = true end end
 		for _, candidate in ipairs(descendants) do
 			if #data.drops >= context.CONFIG.maxDrops then break end
 			local semantic = hasAny(candidate.Name, COLLECTOR_HINTS)
