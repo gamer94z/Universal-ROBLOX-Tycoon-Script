@@ -14,6 +14,7 @@ return function(context)
 		buyMode = { "Nearest", "Cheapest", "Value" },
 		collectMode = { "Nearby", "Tycoon", "Collectors" },
 		touchMode = { "Virtual", "Teleport" },
+		strategy = { "Fastest", "Income", "Rebirth" },
 	}
 
 	local THEME = {
@@ -26,8 +27,8 @@ return function(context)
 		muted = Color3.fromRGB(172, 180, 200),
 		accent = Color3.fromRGB(88, 166, 255),
 		accentSoft = Color3.fromRGB(39, 72, 116),
-		focus = Color3.fromRGB(255, 214, 102),
 		danger = Color3.fromRGB(255, 116, 116),
+		ok = Color3.fromRGB(117, 255, 160),
 	}
 
 	local function track(connection)
@@ -75,6 +76,11 @@ return function(context)
 	local oldGui = CoreGui:FindFirstChild("TycoonCoreGUI")
 	if oldGui then oldGui:Destroy() end
 
+	local camera = workspace.CurrentCamera
+	local viewportHeight = camera and camera.ViewportSize.Y or 1080
+	local wantedHeight = autonomousMode and 610 or 356
+	local panelHeight = math.min(wantedHeight, math.max(360, viewportHeight - 40))
+
 	local gui = create("ScreenGui", {
 		Name = "TycoonCoreGUI",
 		IgnoreGuiInset = true,
@@ -83,7 +89,6 @@ return function(context)
 		Parent = CoreGui,
 	})
 
-	local panelHeight = autonomousMode and 560 or 356
 	local panel = create("Frame", {
 		BackgroundColor3 = THEME.window,
 		BorderSizePixel = 0,
@@ -101,7 +106,6 @@ return function(context)
 		Size = UDim2.new(1, 0, 0, 52),
 		Parent = panel,
 	})
-
 	create("Frame", {
 		BackgroundColor3 = THEME.accent,
 		BorderSizePixel = 0,
@@ -113,14 +117,19 @@ return function(context)
 	title.Position = UDim2.new(0, 12, 0, 9)
 	title.Size = UDim2.new(1, -112, 0, 18)
 
-	local subtitleText = autonomousMode and ("v" .. tostring(CONFIG.version) .. "  //  autonomous") or ("v" .. tostring(CONFIG.version) .. "  //  safe automation")
-	local subtitle = label(header, subtitleText, 8, THEME.accent, Enum.Font.GothamBold)
+	local subtitle = label(
+		header,
+		"v" .. tostring(CONFIG.version) .. (autonomousMode and "  //  speedrun brain" or "  //  automation"),
+		8,
+		THEME.accent,
+		Enum.Font.GothamBold
+	)
 	subtitle.Position = UDim2.new(0, 13, 0, 29)
 	subtitle.Size = UDim2.new(1, -112, 0, 12)
 
 	local stateBadge = create("TextLabel", {
 		AnchorPoint = Vector2.new(1, 0),
-		BackgroundColor3 = THEME.accentSoft,
+		BackgroundColor3 = Color3.fromRGB(46, 50, 64),
 		BorderSizePixel = 0,
 		Font = Enum.Font.GothamBold,
 		Position = UDim2.new(1, -12, 0, 14),
@@ -138,7 +147,6 @@ return function(context)
 		Position = UDim2.new(0, 10, 0, 61),
 		Size = UDim2.new(1, -20, 1, -71),
 		CanvasSize = UDim2.new(),
-		AutomaticCanvasSize = Enum.AutomaticSize.None,
 		ScrollBarThickness = autonomousMode and 3 or 0,
 		ScrollBarImageColor3 = THEME.border,
 		ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -159,30 +167,23 @@ return function(context)
 		local row = create("Frame", {
 			BackgroundColor3 = THEME.panel,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, -5, 0, height or 24),
+			Size = UDim2.new(1, -5, 0, height or 25),
 			Parent = body,
 		})
 		corner(row, 7)
-		stroke(row, THEME.border, 0.52)
-		local rowLabel = label(row, labelText, 10, THEME.muted, Enum.Font.GothamBold)
+		stroke(row, THEME.border, 0.55)
+		local rowLabel = label(row, labelText, 9, THEME.muted, Enum.Font.GothamBold)
 		rowLabel.Position = UDim2.new(0, 10, 0, 0)
-		rowLabel.Size = UDim2.new(1, -112, 1, 0)
+		rowLabel.Size = UDim2.new(1, -116, 1, 0)
 		return row
 	end
 
 	local function setToggleVisual(button, value, danger)
 		button.Text = value and "ON" or "OFF"
 		button.TextColor3 = value and THEME.text or THEME.muted
-		if danger and value then
-			button.BackgroundColor3 = Color3.fromRGB(82, 46, 50)
-		else
-			button.BackgroundColor3 = value and THEME.accentSoft or Color3.fromRGB(35, 40, 53)
-		end
-		local outline = button:FindFirstChildOfClass("UIStroke")
-		if outline then
-			outline.Color = danger and value and THEME.danger or THEME.border
-			outline.Transparency = value and 0.2 or 0.58
-		end
+		button.BackgroundColor3 = value
+			and (danger and Color3.fromRGB(82, 46, 50) or THEME.accentSoft)
+			or Color3.fromRGB(35, 40, 53)
 	end
 
 	local function toggleRow(key, labelText, danger)
@@ -194,23 +195,20 @@ return function(context)
 			BorderSizePixel = 0,
 			Font = Enum.Font.GothamBold,
 			Position = UDim2.new(1, -9, 0.5, 0),
-			Size = UDim2.new(0, 50, 0, 18),
+			Size = UDim2.new(0, 48, 0, 17),
 			Text = "OFF",
 			TextColor3 = THEME.muted,
 			TextSize = 9,
 			Parent = row,
 		})
 		corner(button, 999)
-		stroke(button, THEME.border, 0.58)
+		stroke(button, danger and THEME.danger or THEME.border, 0.4)
 		toggles[key] = { button = button, danger = danger }
 		setToggleVisual(button, CONFIG[key] == true, danger)
-
 		track(button.MouseButton1Click:Connect(function()
-			if destroyed then return end
-			local value = not (CONFIG[key] == true)
-			CONFIG[key] = value
-			setToggleVisual(button, value, danger)
-			if callbacks[key] then callbacks[key](value)
+			CONFIG[key] = not CONFIG[key]
+			setToggleVisual(button, CONFIG[key], danger)
+			if callbacks[key] then callbacks[key](CONFIG[key])
 			elseif context.saveSettings then context.saveSettings() end
 		end))
 	end
@@ -224,7 +222,7 @@ return function(context)
 			BorderSizePixel = 0,
 			Font = Enum.Font.GothamBold,
 			Position = UDim2.new(1, -9, 0.5, 0),
-			Size = UDim2.new(0, 94, 0, 18),
+			Size = UDim2.new(0, 96, 0, 17),
 			Text = tostring(CONFIG[key]),
 			TextColor3 = THEME.text,
 			TextSize = 8,
@@ -233,18 +231,16 @@ return function(context)
 		corner(button, 999)
 		stroke(button, THEME.border, 0.4)
 		cycleButtons[key] = button
-
 		track(button.MouseButton1Click:Connect(function()
 			local values = CYCLES[key] or {}
 			if #values == 0 then return end
-			local current = 1
+			local nextIndex = 1
 			for index, value in ipairs(values) do
-				if value == CONFIG[key] then current = index break end
+				if value == CONFIG[key] then nextIndex = (index % #values) + 1 break end
 			end
-			local nextValue = values[(current % #values) + 1]
-			CONFIG[key] = nextValue
-			button.Text = tostring(nextValue)
-			if cycleCallbacks[key] then cycleCallbacks[key](nextValue)
+			CONFIG[key] = values[nextIndex]
+			button.Text = tostring(CONFIG[key])
+			if cycleCallbacks[key] then cycleCallbacks[key](CONFIG[key])
 			elseif context.saveSettings then context.saveSettings() end
 		end))
 	end
@@ -258,7 +254,7 @@ return function(context)
 	local function actionButton(parent, key, text, danger)
 		local button = create("TextButton", {
 			AutoButtonColor = false,
-			BackgroundColor3 = danger and Color3.fromRGB(72, 39, 45) or Color3.fromRGB(35, 40, 53),
+			BackgroundColor3 = danger and Color3.fromRGB(72, 39, 45) or THEME.accentSoft,
 			BorderSizePixel = 0,
 			Font = Enum.Font.GothamBold,
 			Size = UDim2.new(0.5, -3, 1, 0),
@@ -275,16 +271,16 @@ return function(context)
 		return button
 	end
 
-	local function actionPair(leftKey, leftText, rightKey, rightText, rightDanger)
+	local function actionPair(leftKey, leftText, rightKey, rightText)
 		local row = create("Frame", {
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, -5, 0, 25),
+			Size = UDim2.new(1, -5, 0, 27),
 			Parent = body,
 		})
 		local left = actionButton(row, leftKey, leftText, false)
 		left.Position = UDim2.new(0, 0, 0, 0)
-		local right = actionButton(row, rightKey, rightText, rightDanger)
+		local right = actionButton(row, rightKey, rightText, true)
 		right.AnchorPoint = Vector2.new(1, 0)
 		right.Position = UDim2.new(1, 0, 0, 0)
 	end
@@ -293,7 +289,7 @@ return function(context)
 		local row = create("Frame", {
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, -5, 0, 25),
+			Size = UDim2.new(1, -5, 0, 27),
 			Parent = body,
 		})
 		local button = actionButton(row, key, text, danger)
@@ -303,10 +299,10 @@ return function(context)
 	local function statusLine(parent, key, caption, y)
 		local left = label(parent, caption, 8, THEME.muted, Enum.Font.GothamBold)
 		left.Position = UDim2.new(0, 10, 0, y)
-		left.Size = UDim2.new(0, 78, 0, 14)
+		left.Size = UDim2.new(0, 86, 0, 14)
 		local right = label(parent, "--", 9, THEME.text, Enum.Font.GothamMedium, Enum.TextXAlignment.Right)
-		right.Position = UDim2.new(0, 90, 0, y)
-		right.Size = UDim2.new(1, -100, 0, 14)
+		right.Position = UDim2.new(0, 98, 0, y)
+		right.Size = UDim2.new(1, -108, 0, 14)
 		statusLabels[key] = right
 	end
 
@@ -322,33 +318,37 @@ return function(context)
 	toggleRow("requireOwnerMatch", "OWNER SAFE")
 
 	if autonomousMode then
-		section("AUTONOMOUS")
+		section("SPEEDRUN BRAIN")
+		cycleRow("strategy", "STRATEGY")
 		toggleRow("autopilotEnabled", "AUTOPILOT")
 		toggleRow("learningEnabled", "LEARNING")
 		toggleRow("burstMode", "BURST MODE")
+		toggleRow("autoRewards", "FREE REWARDS")
 		toggleRow("autoRebirth", "AUTO REBIRTH", true)
 
 		section("ACTIONS")
-		actionPair("start", "START", "stop", "STOP", true)
+		actionPair("start", "START", "stop", "STOP")
 		actionWide("resetLearning", "RESET LEARNING", true)
 
 		section("LIVE STATUS")
 		local card = create("Frame", {
 			BackgroundColor3 = THEME.panelAlt,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, -5, 0, 144),
+			Size = UDim2.new(1, -5, 0, 178),
 			Parent = body,
 		})
 		corner(card, 7)
 		stroke(card, THEME.border, 0.48)
 		statusLine(card, "plan", "PLAN", 7)
-		statusLine(card, "category", "CATEGORY", 24)
-		statusLine(card, "eta", "ETA", 41)
-		statusLine(card, "cash", "CASH", 58)
-		statusLine(card, "activity", "ACTIVITY", 75)
-		statusLine(card, "failures", "FAILURES", 92)
-		statusLine(card, "learning", "LEARNING", 109)
-		statusLine(card, "scan", "SCAN", 126)
+		statusLine(card, "strategy", "STRATEGY", 24)
+		statusLine(card, "bottleneck", "BOTTLENECK", 41)
+		statusLine(card, "eta", "ETA", 58)
+		statusLine(card, "best", "PERSONAL BEST", 75)
+		statusLine(card, "cash", "CASH / MIN", 92)
+		statusLine(card, "activity", "ACTIVITY", 109)
+		statusLine(card, "rewards", "REWARDS", 126)
+		statusLine(card, "learning", "LEARNING", 143)
+		statusLine(card, "scan", "SCAN", 160)
 	end
 
 	local function updateCanvas()
@@ -364,16 +364,15 @@ return function(context)
 		AutoButtonColor = false,
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		Position = UDim2.new(0, 0, 0, 0),
-		Size = UDim2.new(1, 0, 0, 52),
+		Size = UDim2.new(1, -96, 0, 52),
 		Text = "",
 		ZIndex = 5,
 		Parent = panel,
 	})
 
 	local function clampPanel(x, y)
-		local camera = workspace.CurrentCamera
-		local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
+		local currentCamera = workspace.CurrentCamera
+		local viewport = currentCamera and currentCamera.ViewportSize or Vector2.new(1920, 1080)
 		return math.clamp(x, 0, math.max(0, viewport.X - panel.AbsoluteSize.X)),
 			math.clamp(y, 0, math.max(0, viewport.Y - panel.AbsoluteSize.Y))
 	end
@@ -394,21 +393,27 @@ return function(context)
 	end))
 
 	track(UserInputService.InputChanged:Connect(function(input)
-		if not dragging then return end
-		if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		if not dragging or (input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch) then return end
 		local delta = input.Position - dragStart
 		local x, y = clampPanel(panelStart.X + delta.X, panelStart.Y + delta.Y)
 		panel.Position = UDim2.new(0, x, 0, y)
 	end))
 
+	local function shortText(value, maxLength)
+		local text = tostring(value or "--")
+		if #text <= maxLength then return text end
+		return text:sub(1, math.max(1, maxLength - 1)) .. "…"
+	end
+
 	local function formatNumber(value)
-		local number = tonumber(value)
-		if not number then return "--" end
-		local absolute = math.abs(number)
-		if absolute >= 1e9 then return string.format("%.2fB", number / 1e9) end
-		if absolute >= 1e6 then return string.format("%.2fM", number / 1e6) end
-		if absolute >= 1e3 then return string.format("%.1fK", number / 1e3) end
-		return tostring(math.floor(number + 0.5))
+		local n = tonumber(value)
+		if not n then return "--" end
+		local absolute = math.abs(n)
+		if absolute >= 1e12 then return string.format("%.2fT", n / 1e12) end
+		if absolute >= 1e9 then return string.format("%.2fB", n / 1e9) end
+		if absolute >= 1e6 then return string.format("%.2fM", n / 1e6) end
+		if absolute >= 1e3 then return string.format("%.1fK", n / 1e3) end
+		return tostring(math.floor(n + 0.5))
 	end
 
 	local function formatDuration(seconds)
@@ -416,7 +421,8 @@ return function(context)
 		if not seconds or seconds < 0 then return "--" end
 		if seconds < 60 then return string.format("%ds", math.floor(seconds + 0.5)) end
 		local minutes = math.floor(seconds / 60)
-		if minutes < 60 then return string.format("%dm %02ds", minutes, math.floor(seconds % 60)) end
+		local remaining = math.floor(seconds % 60)
+		if minutes < 60 then return string.format("%dm %02ds", minutes, remaining) end
 		return string.format("%dh %02dm", math.floor(minutes / 60), minutes % 60)
 	end
 
@@ -424,7 +430,9 @@ return function(context)
 		for key, entry in pairs(toggles) do
 			setToggleVisual(entry.button, CONFIG[key] == true, entry.danger)
 		end
-		for key, button in pairs(cycleButtons) do button.Text = tostring(CONFIG[key]) end
+		for key, button in pairs(cycleButtons) do
+			button.Text = tostring(CONFIG[key])
+		end
 	end
 
 	local function update(payload)
@@ -447,28 +455,26 @@ return function(context)
 			stateBadge.TextColor3 = THEME.danger
 		else
 			stateBadge.Text = "RELAXED"
-			stateBadge.BackgroundColor3 = Color3.fromRGB(86, 71, 28)
-			stateBadge.TextColor3 = THEME.focus
+			stateBadge.BackgroundColor3 = Color3.fromRGB(70, 64, 38)
+			stateBadge.TextColor3 = THEME.text
 		end
 
-		if autonomousMode and payload.autonomous then
-			local status = payload.autonomous
-			local brain = status.brain or {}
+		if autonomousMode then
+			local auto = payload.autonomous or {}
+			local brain = auto.brain or {}
 			local plan = brain.plan or {}
-			if statusLabels.plan then statusLabels.plan.Text = tostring(plan.name or "Waiting") end
-			if statusLabels.category then statusLabels.category.Text = tostring(plan.category or "--") end
-			if statusLabels.eta then statusLabels.eta.Text = formatDuration(brain.etaSeconds) end
-			if statusLabels.cash then statusLabels.cash.Text = formatNumber(status.cash) end
-			if statusLabels.activity then
-				statusLabels.activity.Text = string.format("%d buy / %d collect", status.bought or 0, status.collected or 0)
-			end
-			if statusLabels.failures then statusLabels.failures.Text = tostring(status.purchaseFailures or 0) end
-			if statusLabels.learning then
-				statusLabels.learning.Text = string.format("%d nodes / %d links", brain.learnedNodes or 0, brain.learnedEdges or 0)
-			end
-			if statusLabels.scan then
-				statusLabels.scan.Text = string.format("%s / %.1fms", tostring(data.scanMode or "--"), tonumber(data.scanTimeMs) or 0)
-			end
+			local boost = auto.boosts or {}
+			local stats = payload.stats or {}
+			statusLabels.plan.Text = shortText(plan.name or "waiting", 28)
+			statusLabels.strategy.Text = tostring(brain.strategy or auto.strategy or CONFIG.strategy or "Fastest")
+			statusLabels.bottleneck.Text = shortText(brain.bottleneck or "--", 28)
+			statusLabels.eta.Text = formatDuration(brain.etaSeconds)
+			statusLabels.best.Text = formatDuration(brain.bestCompletionSeconds)
+			statusLabels.cash.Text = formatNumber(data.cash or auto.cash) .. " / " .. formatNumber(stats.cashPerMinute)
+			statusLabels.activity.Text = string.format("%d bought / %d collected", tonumber(auto.bought) or 0, tonumber(auto.collected) or 0)
+			statusLabels.rewards.Text = string.format("%d activated", tonumber(auto.rewardsActivated) or tonumber(boost.activated) or 0)
+			statusLabels.learning.Text = string.format("%d nodes / %d links", tonumber(brain.learnedNodes) or 0, tonumber(brain.learnedEdges) or 0)
+			statusLabels.scan.Text = string.format("%s %.1fms", tostring(data.scanMode or "--"), tonumber(data.scanTimeMs) or 0)
 		end
 	end
 
@@ -481,7 +487,7 @@ return function(context)
 			if destroyed then return end
 			destroyed = true
 			for _, connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
-		table.clear(connections)
+			table.clear(connections)
 			if gui then gui:Destroy() end
 		end,
 	}
