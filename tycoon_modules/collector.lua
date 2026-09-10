@@ -17,6 +17,10 @@ return function()
 	}
 
 	local purchaseFailures = setmetatable({}, { __mode = "k" })
+	local collectCooldowns = setmetatable({}, { __mode = "k" })
+	local collectCursor = 1
+	local MAX_COLLECT_PER_PASS = 6
+	local COLLECT_TARGET_COOLDOWN = 0.45
 
 	local function lower(value)
 		return tostring(value or ""):lower()
@@ -177,42 +181,69 @@ return function()
 		end)
 	end
 
-	local function restoreCollectionState(root, state)
-		restoreRootState(root, state)
-		if not task or type(task.delay) ~= "function" then
-			return
+	local function getCollectionTouchActor(context, root)
+		local character = context.LOCAL_PLAYER and context.LOCAL_PLAYER.Character
+		if not character then
+			return root
 		end
 
-		task.delay(0.05, function()
-			if not root or not root.Parent or not state then
-				return
-			end
+		-- Prefer a non-root character limb. Touch handlers usually only care that
+		-- the touching part belongs to the player's character, while avoiding the
+		-- HumanoidRootPart prevents touch simulation from disturbing movement.
+		local preferredNames = {
+			"LeftFoot",
+			"RightFoot",
+			"LeftLowerLeg",
+			"RightLowerLeg",
+			"Left Leg",
+			"Right Leg",
+			"LowerTorso",
+			"Torso",
+			"Head",
+		}
 
-			local displaced = (root.Position - state.cframe.Position).Magnitude > 0.35
-			local velocityDelta = (root.AssemblyLinearVelocity - state.linearVelocity).Magnitude > 8
-			if displaced or velocityDelta then
-				restoreRootState(root, state)
+		for _, name in ipairs(preferredNames) do
+			local part = character:FindFirstChild(name)
+			if part and part:IsA("BasePart") and part ~= root then
+				return part
 			end
-		end)
+		end
+
+		for _, child in ipairs(character:GetChildren()) do
+			if child:IsA("BasePart") and child ~= root then
+				return child
+			end
+		end
+
+		return root
 	end
 
-	local function touch(root, part, preserveRootState)
-		if not root or not root.Parent or not part or not part.Parent then
+	local function touch(actor, part, suppressCollision)
+		if not actor or not actor.Parent or not part or not part.Parent then
 			return false
 		end
 		if type(firetouchinterest) ~= "function" then
 			return false
 		end
 
-		local rootState = preserveRootState and captureRootState(root) or nil
+		local oldTargetCanCollide
+		if suppressCollision and part:IsA("BasePart") then
+			oldTargetCanCollide = part.CanCollide
+			pcall(function()
+				part.CanCollide = false
+			end)
+		end
+
 		local ok = pcall(function()
-			firetouchinterest(root, part, 0)
-			waitStep()
-			firetouchinterest(root, part, 1)
+			firetouchinterest(actor, part, 0)
+			waitStep(0.02)
+			firetouchinterest(actor, part, 1)
 		end)
 
-		if preserveRootState then
-			restoreCollectionState(root, rootState)
+		if suppressCollision and oldTargetCanCollide ~= nil and part and part.Parent then
+			pcall(function()
+				part.CanCollide = oldTargetCanCollide
+			end)
 		end
 
 		return ok
@@ -242,17 +273,7 @@ return function()
 		return touched
 	end
 
-	local function activatePart(context, root, part, allowTeleport, preserveRootState)
-		if not part or not part.Parent then
-			return false
-		end
-		if allowTeleport and context.CONFIG.touchMode == "Teleport" then
-			return teleportTouch(root, part)
-		end
-		return touch(root, part, preserveRootState)
-	end
-
-	local function activateEntry(context, root, entry, allowTeleport, preserveRootState)
+	local function activateEntry(context, root, entry, allowTeleport, collectionActor)
 		if not entry then
 			return false
 		end
@@ -263,8 +284,13 @@ return function()
 		if fireClick(entry.clickDetector) then
 			return true
 		end
-		if entry.touchPart and activatePart(context, root, entry.touchPart, allowTeleport, preserveRootState) then
-			return true
+		if entry.touchPart then
+			if allowTeleport and context.CONFIG.touchMode == "Teleport" then
+				return teleportTouch(root, entry.touchPart)
+		end
+
+			local actor = collectionActor or root
+			return touch(actor, entry.touchPart, collectionActor ~= nil)
 		end
 
 		return false
@@ -345,7 +371,7 @@ return function()
 	end
 
 	local function collectNearby(context, data)
-		if not data or not data.drops or data.automationAllowed ~= true then
+		if not data or not data.drops or data.automationAllowed ~= true or #data.drops == 0 then
 			return 0
 		end
 
@@ -354,25 +380,51 @@ return function()
 			return 0
 		end
 
-		local collected = 0
-		for _, drop in ipairs(data.drops) do
-			local targetPart = drop.touchPart or drop.part
-			if not targetPart and drop.prompt and drop.prompt.Parent and drop.prompt.Parent:IsA("BasePart") then
-				targetPart = drop.prompt.Parent
-			elseif not targetPart and drop.clickDetector and drop.clickDetector.Parent and drop.clickDetector.Parent:IsA("BasePart") then
-				targetPart = drop.clickDetector.Parent
-			end
-
-			local inRange = context.CONFIG.collectMode == "Tycoon"
-				or (targetPart and (targetPart.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
-			local modeAllows = context.CONFIG.collectMode ~= "Collectors"
-				or tostring(drop.name or ""):lower():find("collect", 1, true) ~= nil
-
-			if inRange and modeAllows and activateEntry(context, root, drop, false, true) then
-				collected = collected + 1
-			end
+		local actor = getCollectionTouchActor(context, root)
+		local now = os.clock()
+		local total = #data.drops
+		if collectCursor > total then
+			collectCursor = 1
 		end
 
+		local collected = 0
+		local activated = 0
+		local checked = 0
+		local index = collectCursor
+
+		while checked < total and activated < MAX_COLLECT_PER_PASS do
+			local drop = data.drops[index]
+			checked = checked + 1
+
+			if drop and drop.object and drop.object.Parent then
+				local targetPart = drop.touchPart or drop.part
+				if not targetPart and drop.prompt and drop.prompt.Parent and drop.prompt.Parent:IsA("BasePart") then
+					targetPart = drop.prompt.Parent
+				elseif not targetPart and drop.clickDetector and drop.clickDetector.Parent and drop.clickDetector.Parent:IsA("BasePart") then
+					targetPart = drop.clickDetector.Parent
+				end
+
+				local inRange = context.CONFIG.collectMode == "Tycoon"
+					or (targetPart and (targetPart.Position - root.Position).Magnitude <= context.CONFIG.collectRange)
+				local modeAllows = context.CONFIG.collectMode ~= "Collectors"
+					or lower(drop.name):find("collect", 1, true) ~= nil
+				local cooldownUntil = collectCooldowns[drop.object] or 0
+
+				if inRange and modeAllows and now >= cooldownUntil then
+					activated = activated + 1
+					if activateEntry(context, root, drop, false, actor) then
+						collected = collected + 1
+						collectCooldowns[drop.object] = now + COLLECT_TARGET_COOLDOWN
+					else
+						collectCooldowns[drop.object] = now + 0.2
+					end
+				end
+			end
+
+			index = (index % total) + 1
+		end
+
+		collectCursor = index
 		return collected
 	end
 
@@ -396,7 +448,7 @@ return function()
 		end
 
 		local before = capturePurchaseState(context, button)
-		if not activateEntry(context, root, button, true, false) then
+		if not activateEntry(context, root, button, true, nil) then
 			putPurchaseOnCooldown(button)
 			return false
 		end
