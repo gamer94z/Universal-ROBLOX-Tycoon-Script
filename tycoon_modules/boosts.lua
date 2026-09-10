@@ -47,23 +47,34 @@ return function(context)
 		return lower(table.concat(parts, " "))
 	end
 
-	local function contextText(object, depth)
-		local parts = {}
-		local current = object
-		local remaining = depth or 2
-		while current and remaining >= 0 do
-			table.insert(parts, objectText(current))
-			current = current.Parent
-			remaining = remaining - 1
+	local function localContextText(object)
+		local parts = { objectText(object) }
+		local parent = object and object.Parent
+		if parent then
+			table.insert(parts, objectText(parent))
+			local inspected = 0
+			for _, sibling in ipairs(parent:GetChildren()) do
+				inspected = inspected + 1
+				if inspected > 18 then break end
+				table.insert(parts, objectText(sibling))
+			end
+		end
+		if object then
+			local inspected = 0
+			for _, child in ipairs(object:GetChildren()) do
+				inspected = inspected + 1
+				if inspected > 12 then break end
+				table.insert(parts, objectText(child))
+			end
 		end
 		return lower(table.concat(parts, " "))
 	end
 
 	local function isSafeFreeCandidate(object)
 		if not object or not object.Parent then return false end
-		local text = contextText(object, 2)
+		if object:IsA("TextButton") and object.Visible == false then return false end
+		local text = localContextText(object)
 		if hasAny(text, BLOCKED_WORDS) then return false end
-
 		local explicitFree = hasAny(text, FREE_WORDS)
 		local boostWithClaim = hasAny(text, BOOST_WORDS) and hasAny(text, CLAIM_WORDS)
 		return explicitFree or boostWithClaim
@@ -82,6 +93,7 @@ return function(context)
 	local function activate(candidate)
 		if not candidate or not candidate.Parent then return false end
 		if candidate:IsA("TextButton") and type(firesignal) == "function" then
+			if candidate.Visible == false then return false end
 			return pcall(function() firesignal(candidate.MouseButton1Click) end)
 		elseif candidate:IsA("ProximityPrompt") and type(fireproximityprompt) == "function" then
 			return pcall(function() fireproximityprompt(candidate) end)
@@ -97,7 +109,6 @@ return function(context)
 				firetouchinterest(actor, part, 0)
 				if task and task.wait then task.wait(0.02) else wait(0.02) end
 				firetouchinterest(actor, part, 1)
-				part.CanCollide = oldCollide
 			end)
 			pcall(function() if part and part.Parent then part.CanCollide = oldCollide end end)
 			return ok
@@ -146,7 +157,7 @@ return function(context)
 				if activate(candidate) then
 					count = count + 1
 					activated = activated + 1
-					lastActivated = contextText(candidate, 1)
+					lastActivated = localContextText(candidate)
 				else
 					skipped = skipped + 1
 				end
