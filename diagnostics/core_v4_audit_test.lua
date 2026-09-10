@@ -3,15 +3,15 @@
 
 local env=(type(getgenv)=="function" and getgenv()) or (type(getfenv)=="function" and getfenv(0)) or _G
 local repo="https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/"
-local BUILD="ffafc836d31e9f79ed823759ab077659e6cb9139"
+local BUILD="08225744231df783fb30dc875ab11fb6b12a100d"
 local base=repo..BUILD.."/"
 
 local expected={
     {path="autonomous_v4.lua",marker="Autonomous Runtime v4",label="runtime-v4"},
     {path="tycoon_modules/scanner.lua",marker="scanner v4",label="scanner-v4"},
-    {path="tycoon_modules/currency.lua",marker="currency resolver v3",label="currency-strict"},
-    {path="tycoon_modules/collector.lua",marker="interaction worker v4",label="collector-v4"},
-    {path="tycoon_modules/brain.lua",marker="return function(context)",label="planner-audited"},
+    {path="tycoon_modules/currency.lua",marker="Never trusts another player's replicated player-list balance",label="currency-strict"},
+    {path="tycoon_modules/collector.lua",marker="interaction worker v4.1",label="collector-v4.1"},
+    {path="tycoon_modules/brain.lua",marker="finite target selection",label="planner-audited"},
 }
 
 local sources={}
@@ -38,7 +38,7 @@ env.__VYRS_TYCOON_MODULE_BASE_URL=base.."tycoon_modules"
 env.__VYRS_TYCOON_TEST_BUILD=BUILD
 
 print("[0xVyrs Tycoon v4 Test] VERIFIED BUILD // "..BUILD)
-print("[0xVyrs Tycoon v4 Test] runtime=v4 scanner=v4 currency=strict collector=v4 planner=audited")
+print("[0xVyrs Tycoon v4 Test] runtime=v4 scanner=v4 currency=strict collector=v4.1 planner=audited")
 
 local runtimeChunk,runtimeError=loadstring(sources["autonomous_v4.lua"])
 if type(runtimeChunk)~="function" then
