@@ -3,7 +3,7 @@
 	All Rights Reserved.
 
 	0xVyrs Tycoon Autonomous Runtime
-	Adaptive progression, learning, recovery and spectator support.
+	Adaptive progression, learning and recovery.
 ]]
 
 local Players = game:GetService("Players")
@@ -17,9 +17,7 @@ local SHARED_ENV = (type(getgenv) == "function" and getgenv())
 	or _G
 
 local previousCleanup = SHARED_ENV.__VYRS_TYCOON_CLEANUP
-if type(previousCleanup) == "function" then
-	pcall(previousCleanup)
-end
+if type(previousCleanup) == "function" then pcall(previousCleanup) end
 
 local ACTIVE_TOKEN = "autonomous:" .. tostring(os.clock())
 SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN = ACTIVE_TOKEN
@@ -39,8 +37,8 @@ local CONFIG = {
 	collectMode = "Nearby",
 	collectRange = 90,
 	scanInterval = 8,
-	renderInterval = 0.75,
-	uiInterval = 0.35,
+	renderInterval = 1,
+	uiInterval = 0.5,
 	statsInterval = 1,
 	collectInterval = 0.5,
 	buyInterval = 0.5,
@@ -53,16 +51,14 @@ local CONFIG = {
 	autopilotEnabled = true,
 	learningEnabled = true,
 	burstMode = true,
-	autoClaim = false,
 	autoRebirth = false,
-	spectatorMode = false,
 
 	moduleBaseUrl = tostring(SHARED_ENV.__VYRS_TYCOON_MODULE_BASE_URL
 		or "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/core-hardening/tycoon_modules"),
 }
 
 local SETTINGS_FILE = "tycoon_settings.json"
-local MODULE_NAMES = { "scanner", "ui", "collector", "upgrades", "stats", "brain", "autopilot", "spectator" }
+local MODULE_NAMES = { "scanner", "ui", "collector", "upgrades", "stats", "brain", "autopilot" }
 
 local function canUseFileApi()
 	return type(isfile) == "function" and type(readfile) == "function" and type(writefile) == "function"
@@ -157,7 +153,7 @@ local function requireModule(name)
 			"tycoon_modules\\" .. fileName,
 		}) do
 			local ok, result = pcall(function() return readfile(path) end)
-			if ok and type(result) == "string" and result ~= "" then source = result; break end
+			if ok and type(result) == "string" and result ~= "" then source = result break end
 		end
 	end
 	if not source and type(game.HttpGet) == "function" then
@@ -211,12 +207,11 @@ local collector = init(factories.collector)
 local upgrades = init(factories.upgrades)
 local brain = init(factories.brain)
 local autopilot = init(factories.autopilot)
-local spectator = init(factories.spectator)
 local ui = safe("ui init", factories.ui, context)
 local stats = safe("stats init", factories.stats, context)
 
 if type(scanner) ~= "table" or type(collector) ~= "table" or type(upgrades) ~= "table"
-	or type(brain) ~= "table" or type(autopilot) ~= "table" or type(spectator) ~= "table"
+	or type(brain) ~= "table" or type(autopilot) ~= "table"
 	or type(ui) ~= "table" or type(stats) ~= "table" then
 	error("[0xVyrs Tycoon] Autonomous module init failed")
 end
@@ -235,7 +230,6 @@ local runtime = {
 	lastStats = -math.huge,
 	lastBuy = -math.huge,
 	lastCollect = -math.huge,
-	lastClaim = -math.huge,
 	lastCashConnect = -math.huge,
 	bought = 0,
 	collected = 0,
@@ -259,6 +253,10 @@ local EVENT_SCAN_DEBOUNCE = 0.16
 local EVENT_SCAN_MIN_INTERVAL = 0.38
 local heartbeatConnection
 local cleanedUp = false
+
+local function active()
+	return not cleanedUp and SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN
+end
 
 local function markScanDirty(immediate)
 	if not runtime.scanDirty then
@@ -354,7 +352,6 @@ local function refreshTargets()
 		runtime.plannedTarget = safe("legacy choose", upgrades.choosePurchase, runtime.data, getLocalRoot(), CONFIG.buyMode)
 		runtime.planScore = nil
 	end
-	if CONFIG.spectatorMode then safe("spectator target", spectator.setTarget, runtime.plannedTarget or runtime.nearest) end
 end
 
 local function performScan(now)
@@ -386,11 +383,23 @@ local function setEnabled(value)
 	saveSettings()
 end
 
-local function setSpectator(value)
-	CONFIG.spectatorMode = value == true
-	safe("spectator toggle", spectator.setEnabled, CONFIG.spectatorMode)
-	if CONFIG.spectatorMode then safe("spectator target", spectator.setTarget, runtime.plannedTarget or runtime.nearest) end
-	saveSettings()
+local function start()
+	CONFIG.autoBuy = true
+	CONFIG.autoCollect = true
+	CONFIG.autopilotEnabled = true
+	setEnabled(true)
+	return true
+end
+
+local function stop()
+	setEnabled(false)
+	return true
+end
+
+local function resetLearning()
+	local result = safe("brain reset", brain.resetPlaceProfile)
+	refreshTargets()
+	return result ~= false
 end
 
 ui.onToggle("enabled", setEnabled)
@@ -405,29 +414,18 @@ ui.onToggle("requireOwnerMatch", function(v)
 	markScanDirty(true)
 	saveSettings()
 end)
+ui.onToggle("autopilotEnabled", function(v) CONFIG.autopilotEnabled = v; refreshTargets(); saveSettings() end)
+ui.onToggle("learningEnabled", function(v) CONFIG.learningEnabled = v; refreshTargets(); saveSettings() end)
+ui.onToggle("burstMode", function(v) CONFIG.burstMode = v; saveSettings() end)
+ui.onToggle("autoRebirth", function(v) CONFIG.autoRebirth = v; saveSettings() end)
 ui.onToggle("autoLoadGamePreset", function(v) CONFIG.autoLoadGamePreset = v; saveSettings() end)
 ui.onCycle("buyMode", function(v) CONFIG.buyMode = v; refreshTargets(); saveSettings() end)
 ui.onCycle("touchMode", function(v) CONFIG.touchMode = v; saveSettings() end)
 ui.onCycle("collectMode", function(v) CONFIG.collectMode = v; saveSettings() end)
-
-local function cleanup()
-	if cleanedUp then return end
-	cleanedUp = true
-	if heartbeatConnection then pcall(function() heartbeatConnection:Disconnect() end) end
-	if runtime.cashConnection then pcall(function() runtime.cashConnection:Disconnect() end) end
-	disconnectRootWatch()
-	disconnectList(runtime.globalConnections)
-	safe("brain save", brain.save)
-	safe("spectator destroy", spectator.destroy)
-	safe("highlight clear", upgrades.clear)
-	safe("label clear", upgrades.clearLabels)
-	safe("waypoint hide", upgrades.hideWaypoint)
-	if upgrades.destroy then safe("upgrades destroy", upgrades.destroy) end
-	if ui.destroy then safe("ui destroy", ui.destroy) end
-	if SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN then SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN = nil end
-	if SHARED_ENV.__VYRS_TYCOON_CLEANUP == cleanup then SHARED_ENV.__VYRS_TYCOON_CLEANUP = nil end
-	if SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS == runtime then SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS = nil end
-	SHARED_ENV.__VYRS_TYCOON_AUTONOMOUS = nil
+if type(ui.onAction) == "function" then
+	ui.onAction("start", start)
+	ui.onAction("stop", stop)
+	ui.onAction("resetLearning", resetLearning)
 end
 
 local function status()
@@ -437,9 +435,7 @@ local function status()
 		autopilotEnabled = CONFIG.autopilotEnabled,
 		autoBuy = CONFIG.autoBuy,
 		autoCollect = CONFIG.autoCollect,
-		autoClaim = CONFIG.autoClaim,
 		autoRebirth = CONFIG.autoRebirth,
-		spectatorMode = CONFIG.spectatorMode,
 		bought = runtime.bought,
 		collected = runtime.collected,
 		purchaseAttempts = runtime.purchaseAttempts,
@@ -451,44 +447,42 @@ local function status()
 		cash = runtime.data and runtime.data.cash or getCash(),
 		brain = safe("brain status", brain.getStatus, runtime.data, statsState()),
 		autopilot = safe("autopilot status", autopilot.getStatus),
-		spectator = safe("spectator status", spectator.getStatus),
 	}
+end
+
+local function cleanup()
+	if cleanedUp then return end
+	cleanedUp = true
+	if heartbeatConnection then pcall(function() heartbeatConnection:Disconnect() end) end
+	if runtime.cashConnection then pcall(function() runtime.cashConnection:Disconnect() end) end
+	disconnectRootWatch()
+	disconnectList(runtime.globalConnections)
+	safe("brain save", brain.save)
+	safe("highlight clear", upgrades.clear)
+	safe("label clear", upgrades.clearLabels)
+	safe("waypoint hide", upgrades.hideWaypoint)
+	if upgrades.destroy then safe("upgrades destroy", upgrades.destroy) end
+	if ui.destroy then safe("ui destroy", ui.destroy) end
+	if SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN then SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN = nil end
+	if SHARED_ENV.__VYRS_TYCOON_CLEANUP == cleanup then SHARED_ENV.__VYRS_TYCOON_CLEANUP = nil end
+	if SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS == runtime then SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS = nil end
+	if SHARED_ENV.__VYRS_TYCOON_AUTONOMOUS then SHARED_ENV.__VYRS_TYCOON_AUTONOMOUS = nil end
 end
 
 SHARED_ENV.__VYRS_TYCOON_CLEANUP = cleanup
 SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS = runtime
 SHARED_ENV.__VYRS_TYCOON_AUTONOMOUS = {
-	start = function()
-		CONFIG.autoBuy = true
-		CONFIG.autoCollect = true
-		CONFIG.autopilotEnabled = true
-		setEnabled(true)
-		return true
-	end,
-	startFull = function()
-		CONFIG.autoClaim = true
-		CONFIG.autoBuy = true
-		CONFIG.autoCollect = true
-		CONFIG.autopilotEnabled = true
-		setEnabled(true)
-		return true
-	end,
-	stop = function() setEnabled(false); return true end,
+	start = start,
+	stop = stop,
 	setEnabled = setEnabled,
 	setAutopilot = function(v) CONFIG.autopilotEnabled = v == true; refreshTargets(); saveSettings(); return CONFIG.autopilotEnabled end,
-	setAutoClaim = function(v) CONFIG.autoClaim = v == true; saveSettings(); return CONFIG.autoClaim end,
 	setAutoRebirth = function(v) CONFIG.autoRebirth = v == true; saveSettings(); return CONFIG.autoRebirth end,
-	setSpectator = function(v) setSpectator(v); return CONFIG.spectatorMode end,
-	setLearning = function(v) CONFIG.learningEnabled = v == true; saveSettings(); return CONFIG.learningEnabled end,
+	setLearning = function(v) CONFIG.learningEnabled = v == true; refreshTargets(); saveSettings(); return CONFIG.learningEnabled end,
 	setBurst = function(v) CONFIG.burstMode = v == true; saveSettings(); return CONFIG.burstMode end,
-	resetLearning = function() return safe("brain reset", brain.resetPlaceProfile) end,
+	resetLearning = resetLearning,
 	status = status,
 	cleanup = cleanup,
 }
-
-local function active()
-	return not cleanedUp and SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN
-end
 
 table.insert(runtime.globalConnections, LOCAL_PLAYER.CharacterAdded:Connect(function()
 	if scanner.invalidateRoot then safe("character invalidate", scanner.invalidateRoot) end
@@ -497,11 +491,10 @@ table.insert(runtime.globalConnections, LOCAL_PLAYER.CharacterAdded:Connect(func
 end))
 
 connectCashWatch()
-setSpectator(CONFIG.spectatorMode)
 safe("autopilot enabled", autopilot.noteEnabled, CONFIG.enabled)
 
 heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
-	if not active() then cleanup(); return end
+	if not active() then cleanup() return end
 	local now = os.clock()
 
 	if not runtime.cashConnection and now - runtime.lastCashConnect >= 2 then
@@ -515,7 +508,9 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 	end
 
 	if CONFIG.enabled then
-		local eventDue = runtime.scanDirty and now - runtime.scanDirtyAt >= EVENT_SCAN_DEBOUNCE and now - runtime.lastScan >= EVENT_SCAN_MIN_INTERVAL
+		local eventDue = runtime.scanDirty
+			and now - runtime.scanDirtyAt >= EVENT_SCAN_DEBOUNCE
+			and now - runtime.lastScan >= EVENT_SCAN_MIN_INTERVAL
 		local periodicDue = now - runtime.lastScan >= CONFIG.scanInterval
 		if eventDue or periodicDue then performScan(now) end
 	end
@@ -524,14 +519,6 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		runtime.wasEnabled = true
 		runtime.data.showLabels = CONFIG.showLabels
 		updateCashState()
-
-		if not runtime.data.ownerVerified and CONFIG.autoClaim and now - runtime.lastClaim >= 4 then
-			runtime.lastClaim = now
-			if safe("auto claim", autopilot.tryClaim) then
-				if scanner.invalidateRoot then safe("claim invalidate", scanner.invalidateRoot) end
-				markScanDirty(true)
-			end
-		end
 
 		local complete = safe("completion", autopilot.updateCompletion, brain, runtime.data) == true
 		if complete then
@@ -545,16 +532,25 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		if now - runtime.lastRender >= CONFIG.renderInterval then
 			runtime.lastRender = now
 			refreshTargets()
-			if CONFIG.highlightAffordable then safe("highlight", upgrades.render, runtime.data, runtime.plannedTarget or runtime.nearest)
-			else safe("highlight clear", upgrades.clear) end
+			if CONFIG.highlightAffordable then
+				safe("highlight", upgrades.render, runtime.data, runtime.plannedTarget or runtime.nearest)
+			else
+				safe("highlight clear", upgrades.clear)
+			end
 			safe("labels", upgrades.renderLabels, runtime.data, runtime.plannedTarget or runtime.nearest)
-			if CONFIG.showWaypoint then safe("waypoint", upgrades.updateWaypoint, runtime.plannedTarget or runtime.nearest or runtime.cheapest)
-			else safe("waypoint hide", upgrades.hideWaypoint) end
+			if CONFIG.showWaypoint then
+				safe("waypoint", upgrades.updateWaypoint, runtime.plannedTarget or runtime.nearest or runtime.cheapest)
+			else
+				safe("waypoint hide", upgrades.hideWaypoint)
+			end
 		end
 
 		local buyInterval = CONFIG.buyInterval
-		if CONFIG.autopilotEnabled and CONFIG.burstMode then buyInterval = safe("buy interval", autopilot.getBuyInterval, runtime.data) or buyInterval end
-		if CONFIG.autoBuy and runtime.data.automationAllowed and not complete and not runtime.buyBusy and now - runtime.lastBuy >= buyInterval then
+		if CONFIG.autopilotEnabled and CONFIG.burstMode then
+			buyInterval = safe("buy interval", autopilot.getBuyInterval, runtime.data) or buyInterval
+		end
+		if CONFIG.autoBuy and runtime.data.automationAllowed and not complete
+			and not runtime.buyBusy and now - runtime.lastBuy >= buyInterval then
 			runtime.lastBuy = now
 			runtime.buyBusy = true
 			refreshTargets()
@@ -575,8 +571,11 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		end
 
 		local collectInterval = CONFIG.collectInterval
-		if CONFIG.autopilotEnabled then collectInterval = safe("collect interval", autopilot.getCollectInterval, runtime.data) or collectInterval end
-		if CONFIG.autoCollect and runtime.data.automationAllowed and not runtime.collectBusy and now - runtime.lastCollect >= collectInterval then
+		if CONFIG.autopilotEnabled then
+			collectInterval = safe("collect interval", autopilot.getCollectInterval, runtime.data) or collectInterval
+		end
+		if CONFIG.autoCollect and runtime.data.automationAllowed and not runtime.collectBusy
+			and now - runtime.lastCollect >= collectInterval then
 			runtime.lastCollect = now
 			runtime.collectBusy = true
 			runtime.collected = runtime.collected + (safe("collect", collector.collectNearby, context, runtime.data) or 0)
@@ -600,6 +599,7 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 			stats = statsState(),
 			collected = runtime.collected,
 			bought = runtime.bought,
+			autonomous = status(),
 		})
 	end
 end)
@@ -615,4 +615,4 @@ spawn(function()
 	end
 end)
 
-print("[0xVyrs Tycoon] Autonomous runtime loaded. Use getgenv().__VYRS_TYCOON_AUTONOMOUS.start() to begin.")
+print("[0xVyrs Tycoon] Autonomous runtime loaded. Use the dashboard START button to begin.")
