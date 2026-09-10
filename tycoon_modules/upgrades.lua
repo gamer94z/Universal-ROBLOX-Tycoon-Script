@@ -1,4 +1,5 @@
-return function()
+return function(context)
+	local CONFIG = context and context.CONFIG or {}
 	local highlights = {}
 	local labels = {}
 	local waypointGui
@@ -187,6 +188,14 @@ return function()
 		return gui
 	end
 
+	local function removeLabel(object)
+		local gui = labels[object]
+		if gui then
+			gui:Destroy()
+			labels[object] = nil
+		end
+	end
+
 	local function renderLabels(data, nearest)
 		if not data or not data.buttons or data.showLabels == false then
 			clearLabels()
@@ -198,21 +207,30 @@ return function()
 			if index > (data.maxLabels or 16) then
 				break
 			end
-			if button.part and button.part.Parent then
-				seen[button.object] = true
-				local gui = labels[button.object]
+
+			local object = button.object
+			local isWaypointTarget = CONFIG.showWaypoint == true
+				and nearest
+				and nearest.object == object
+
+			-- The waypoint already identifies the nearest target. Rendering the
+			-- normal button label on that same object creates two stacked NEXT tags.
+			if isWaypointTarget then
+				removeLabel(object)
+			elseif button.part and button.part.Parent and object then
+				seen[object] = true
+				local gui = labels[object]
 				if not gui then
 					gui = makeLabel(button)
-					labels[button.object] = gui
+					labels[object] = gui
 				end
 				gui.Enabled = true
 				gui.Adornee = button.part
 				gui.Parent = button.part
 				local label = gui:FindFirstChild("Label")
 				if label then
-					local tag = nearest and nearest.object == button.object and "NEXT " or ""
-					local price = button.price and tostring(button.price) or "?"
-					label.Text = string.format("%s$%s", tag, price)
+					local price = button.price ~= nil and tostring(button.price) or "?"
+					label.Text = string.format("$%s", price)
 					label.TextColor3 = button.affordable and Color3.fromRGB(180, 232, 255) or Color3.fromRGB(255, 154, 154)
 				end
 			end
