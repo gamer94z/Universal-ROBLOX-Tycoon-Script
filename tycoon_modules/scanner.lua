@@ -442,7 +442,7 @@ return function(context)
                 if not seenHost[r.host] then
                     local familySize=familyCounts[r.family] or 1
                     local hinted=hasAny(r.host.Name,PURCHASE_HINTS) or hasAny(r.family and r.family.Name or "",PURCHASE_HINTS)
-                    if familySize>=2 or hinted or r.price==0 then
+                    if familySize>=2 or hinted or r.price==0 or (verified and (r.depth or 99)<=2) then
                         local touch,prompt,click
                         if r.interaction:IsA("TouchTransmitter") then touch=interactionPart(r.interaction)
                         elseif r.interaction:IsA("ProximityPrompt") then prompt=r.interaction
