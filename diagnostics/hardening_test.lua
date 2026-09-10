@@ -5,7 +5,7 @@ local env=(type(getgenv)=="function" and getgenv()) or (type(getfenv)=="function
 local Players=game:GetService("Players")
 local repo="https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/"
 local STABLE_RUNTIME="8c2e708a6faf50bc3bc7e7f038df2585d95ddc49"
-local HARDENING_COMMIT="65548394bd6384930d5491ff9f879099da467461"
+local HARDENING_COMMIT="57c259bb54c83578da8852265ce8cae2e9334f37"
 
 local currencySource=game:HttpGet(repo..HARDENING_COMMIT.."/tycoon_modules/currency.lua")
 local currencyChunk,currencyCompileError=loadstring(currencySource)
@@ -82,10 +82,9 @@ if task and task.spawn then
             local api=env.__VYRS_TYCOON_AUTONOMOUS
             local ok,status=api and type(api.status)=="function" and pcall(api.status)
             if ok and status and status.enabled then
-                task.wait(8)
+                task.wait(10)
                 local runtime=env.__VYRS_TYCOON_DIAGNOSTICS
                 local data=runtime and runtime.data
-                local collectorStatus=runtime and runtime.collectorStatus
                 print(string.format("[0xVyrs Tycoon Test] BUY STATE // attempts=%s failures=%s bought=%s cash=%s buttons=%s affordable=%s target=%s",
                     tostring(runtime and runtime.purchaseAttempts or 0),
                     tostring(runtime and runtime.purchaseFailures or 0),
@@ -100,5 +99,5 @@ if task and task.spawn then
     end)
 end
 
-print("[0xVyrs Tycoon Test] deep hardening active // direct modules // strict currency // isolated purchases // reused-pad verification // stable waypoint")
+print("[0xVyrs Tycoon Test] deep hardening active // proximity fallback // sticky target HUD // strict currency")
 return chunk()
