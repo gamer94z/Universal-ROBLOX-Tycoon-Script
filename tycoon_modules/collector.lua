@@ -151,7 +151,31 @@ return function()
 		end)
 	end
 
-	local function touch(root, part)
+	local function captureRootState(root)
+		if not root or not root.Parent then
+			return nil
+		end
+
+		return {
+			cframe = root.CFrame,
+			linearVelocity = root.AssemblyLinearVelocity,
+			angularVelocity = root.AssemblyAngularVelocity,
+		}
+	end
+
+	local function restoreRootState(root, state)
+		if not root or not root.Parent or not state then
+			return
+		end
+
+		pcall(function()
+			root.CFrame = state.cframe
+			root.AssemblyLinearVelocity = state.linearVelocity
+			root.AssemblyAngularVelocity = state.angularVelocity
+		end)
+	end
+
+	local function touch(root, part, preserveRootState)
 		if not root or not root.Parent or not part or not part.Parent then
 			return false
 		end
@@ -159,11 +183,17 @@ return function()
 			return false
 		end
 
+		local rootState = preserveRootState and captureRootState(root) or nil
 		local ok = pcall(function()
 			firetouchinterest(root, part, 0)
 			waitStep()
 			firetouchinterest(root, part, 1)
 		end)
+
+		if preserveRootState then
+			restoreRootState(root, rootState)
+		end
+
 		return ok
 	end
 
@@ -172,7 +202,7 @@ return function()
 			return false
 		end
 
-		local originalCFrame = root.CFrame
+		local originalState = captureRootState(root)
 		local targetCFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
 		local moved = pcall(function()
 			root.CFrame = targetCFrame
@@ -180,34 +210,28 @@ return function()
 			root.AssemblyAngularVelocity = Vector3.zero
 		end)
 		if not moved then
-			return touch(root, part)
+			return touch(root, part, false)
 		end
 
 		waitStep(0.08)
-		local touched = touch(root, part)
+		local touched = touch(root, part, false)
 		waitStep(0.08)
-		pcall(function()
-			if root and root.Parent then
-				root.CFrame = originalCFrame
-				root.AssemblyLinearVelocity = Vector3.zero
-				root.AssemblyAngularVelocity = Vector3.zero
-			end
-		end)
+		restoreRootState(root, originalState)
 
 		return touched
 	end
 
-	local function activatePart(context, root, part, allowTeleport)
+	local function activatePart(context, root, part, allowTeleport, preserveRootState)
 		if not part or not part.Parent then
 			return false
 		end
 		if allowTeleport and context.CONFIG.touchMode == "Teleport" then
 			return teleportTouch(root, part)
 		end
-		return touch(root, part)
+		return touch(root, part, preserveRootState)
 	end
 
-	local function activateEntry(context, root, entry, allowTeleport)
+	local function activateEntry(context, root, entry, allowTeleport, preserveRootState)
 		if not entry then
 			return false
 		end
@@ -218,7 +242,7 @@ return function()
 		if fireClick(entry.clickDetector) then
 			return true
 		end
-		if entry.touchPart and activatePart(context, root, entry.touchPart, allowTeleport) then
+		if entry.touchPart and activatePart(context, root, entry.touchPart, allowTeleport, preserveRootState) then
 			return true
 		end
 
@@ -249,7 +273,7 @@ return function()
 			local modeAllows = context.CONFIG.collectMode ~= "Collectors"
 				or tostring(drop.name or ""):lower():find("collect", 1, true) ~= nil
 
-			if inRange and modeAllows and activateEntry(context, root, drop, false) then
+			if inRange and modeAllows and activateEntry(context, root, drop, false, true) then
 				collected = collected + 1
 			end
 		end
@@ -262,7 +286,6 @@ return function()
 			return false
 		end
 		if purchaseLooksBlocked(button) then
-			-- Keep this result out of subsequent target selection until the next scan.
 			button.paidPurchase = true
 			button.affordable = false
 			button.locked = false
@@ -273,7 +296,7 @@ return function()
 		if not root then
 			return false
 		end
-		return activateEntry(context, root, button, true)
+		return activateEntry(context, root, button, true, false)
 	end
 
 	return {
