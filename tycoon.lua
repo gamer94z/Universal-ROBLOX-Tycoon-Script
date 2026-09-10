@@ -297,6 +297,9 @@ if type(scanner.scan) ~= "function"
 	error("[0xVyrs Tycoon] Module contract failed")
 end
 
+local EVENT_SCAN_DEBOUNCE = 0.15
+local EVENT_SCAN_MIN_INTERVAL = 0.45
+
 local runtime = {
 	lastScan = 0,
 	lastCollect = 0,
@@ -311,14 +314,29 @@ local runtime = {
 	nextLocked = nil,
 	collected = 0,
 	bought = 0,
+	purchaseAttempts = 0,
+	purchaseFailures = 0,
 	wasEnabled = false,
+	scanDirty = true,
+	scanDirtyAt = 0,
+	watchedRoot = nil,
+	rootConnections = {},
 }
+
+local function markScanDirty()
+	if not runtime.scanDirty then
+		runtime.scanDirty = true
+		runtime.scanDirtyAt = os.clock()
+	end
+end
 
 ui.onToggle("enabled", function(value)
 	CONFIG.enabled = value
 	if value then
 		runtime.lastScan = -math.huge
 		runtime.lastRender = -math.huge
+		runtime.scanDirty = true
+		runtime.scanDirtyAt = 0
 	end
 	saveSettings()
 end)
@@ -345,6 +363,8 @@ end)
 ui.onToggle("requireOwnerMatch", function(value)
 	CONFIG.requireOwnerMatch = value
 	runtime.lastScan = -math.huge
+	runtime.scanDirty = true
+	runtime.scanDirtyAt = 0
 	saveSettings()
 end)
 ui.onToggle("autoLoadGamePreset", function(value)
@@ -367,6 +387,102 @@ end)
 local heartbeatConnection
 local cleanedUp = false
 
+local function disconnectRootWatch()
+	for _, connection in ipairs(runtime.rootConnections) do
+		pcall(function()
+			connection:Disconnect()
+		end)
+	end
+	runtime.rootConnections = {}
+	runtime.watchedRoot = nil
+end
+
+local function lowerName(instance)
+	return instance and tostring(instance.Name or ""):lower() or ""
+end
+
+local function looksPurchaseRelated(instance)
+	if not instance then
+		return false
+	end
+
+	if instance:IsA("TouchTransmitter") or instance:IsA("ProximityPrompt") or instance:IsA("ClickDetector") then
+		return true
+	end
+
+	local name = lowerName(instance)
+	if name:find("button", 1, true)
+		or name:find("purchase", 1, true)
+		or name:find("buy", 1, true)
+		or name:find("price", 1, true)
+		or name:find("cost", 1, true)
+		or name:find("owner", 1, true) then
+		return true
+	end
+
+	local parent = instance.Parent
+	local parentName = lowerName(parent)
+	if parentName:find("button", 1, true)
+		or parentName:find("purchase", 1, true)
+		or parentName:find("buy", 1, true)
+		or parentName:find("pad", 1, true) then
+		return true
+	end
+
+	if (instance:IsA("IntValue") or instance:IsA("NumberValue") or instance:IsA("StringValue"))
+		and (name:find("cash", 1, true) or name:find("money", 1, true)) then
+		return true
+	end
+
+	return false
+end
+
+local function watchRoot(root)
+	if runtime.watchedRoot == root then
+		return
+	end
+
+	disconnectRootWatch()
+	if not root or root == workspace or not root.Parent then
+		return
+	end
+
+	runtime.watchedRoot = root
+	table.insert(runtime.rootConnections, root.DescendantAdded:Connect(function(instance)
+		if looksPurchaseRelated(instance) then
+			markScanDirty()
+		end
+	end))
+	table.insert(runtime.rootConnections, root.DescendantRemoving:Connect(function(instance)
+		if looksPurchaseRelated(instance) then
+			markScanDirty()
+		end
+	end))
+	table.insert(runtime.rootConnections, root.AncestryChanged:Connect(function(_, parent)
+		if parent == nil then
+			markScanDirty()
+		end
+	end))
+end
+
+local function refreshUpgradeTargets()
+	runtime.nearest = runSafe("nearest upgrade", upgrades.getNearestAffordable, runtime.data, getLocalRoot())
+	runtime.cheapest = runSafe("cheapest upgrade", upgrades.getCheapestAffordable, runtime.data)
+	runtime.bestValue = runSafe("best value upgrade", upgrades.getMostExpensiveAffordable, runtime.data)
+	runtime.nextLocked = runSafe("next locked upgrade", upgrades.getNextLocked, runtime.data)
+end
+
+local function performScan(now)
+	runtime.scanDirty = false
+	runtime.lastScan = now
+	local scanned = runSafe("scan", scanner.scan, context)
+	if scanned then
+		runtime.data = scanned
+		watchRoot(scanned.root)
+	end
+	refreshUpgradeTargets()
+end
+
 local function cleanup()
 	if cleanedUp then
 		return
@@ -379,6 +495,7 @@ local function cleanup()
 		end)
 		heartbeatConnection = nil
 	end
+	disconnectRootWatch()
 
 	runSafe("highlight clear", upgrades.clear)
 	runSafe("label clear", upgrades.clearLabels)
@@ -396,9 +513,13 @@ local function cleanup()
 	if SHARED_ENV.__VYRS_TYCOON_CLEANUP == cleanup then
 		SHARED_ENV.__VYRS_TYCOON_CLEANUP = nil
 	end
+	if SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS == runtime then
+		SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS = nil
+	end
 end
 
 SHARED_ENV.__VYRS_TYCOON_CLEANUP = cleanup
+SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS = runtime
 
 local function isActiveToken()
 	return SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN and not cleanedUp
@@ -424,13 +545,14 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		runSafe("stats update", stats.update, deltaTime)
 	end
 
-	if CONFIG.enabled and now - runtime.lastScan >= CONFIG.scanInterval then
-		runtime.lastScan = now
-		runtime.data = runSafe("scan", scanner.scan, context) or runtime.data
-		runtime.nearest = runSafe("nearest upgrade", upgrades.getNearestAffordable, runtime.data, getLocalRoot())
-		runtime.cheapest = runSafe("cheapest upgrade", upgrades.getCheapestAffordable, runtime.data)
-		runtime.bestValue = runSafe("best value upgrade", upgrades.getMostExpensiveAffordable, runtime.data)
-		runtime.nextLocked = runSafe("next locked upgrade", upgrades.getNextLocked, runtime.data)
+	if CONFIG.enabled then
+		local eventScanDue = runtime.scanDirty
+			and now - runtime.scanDirtyAt >= EVENT_SCAN_DEBOUNCE
+			and now - runtime.lastScan >= EVENT_SCAN_MIN_INTERVAL
+		local periodicScanDue = now - runtime.lastScan >= CONFIG.scanInterval
+		if eventScanDue or periodicScanDue then
+			performScan(now)
+		end
 	end
 
 	if CONFIG.enabled and runtime.data then
@@ -439,6 +561,7 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 
 		if now - runtime.lastRender >= CONFIG.renderInterval then
 			runtime.lastRender = now
+			refreshUpgradeTargets()
 			if CONFIG.highlightAffordable then
 				runSafe("highlight render", upgrades.render, runtime.data, runtime.nearest)
 			else
@@ -455,9 +578,17 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 
 		if buyAllowed(runtime.data) and CONFIG.autoBuy and now - runtime.lastBuy >= CONFIG.buyInterval then
 			runtime.lastBuy = now
+			refreshUpgradeTargets()
 			local target = upgrades.choosePurchase(runtime.data, getLocalRoot(), CONFIG.buyMode)
-			if target and runSafe("buy", collector.buyButton, context, target) then
-				runtime.bought = runtime.bought + 1
+			if target then
+				runtime.purchaseAttempts = runtime.purchaseAttempts + 1
+				if runSafe("buy", collector.buyButton, context, target) then
+					runtime.bought = runtime.bought + 1
+					markScanDirty()
+				else
+					runtime.purchaseFailures = runtime.purchaseFailures + 1
+					refreshUpgradeTargets()
+				end
 			end
 		end
 
