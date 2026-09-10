@@ -5,7 +5,7 @@ local env=(type(getgenv)=="function" and getgenv()) or (type(getfenv)=="function
 local Players=game:GetService("Players")
 local repo="https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/"
 local STABLE_RUNTIME="8c2e708a6faf50bc3bc7e7f038df2585d95ddc49"
-local HARDENING_COMMIT="da9fd570ace003756f6254018212474fb07e5a30"
+local HARDENING_COMMIT="436b9f617daf1bf04b71ec53b536223c6b476f86"
 
 local currencySource=game:HttpGet(repo..HARDENING_COMMIT.."/tycoon_modules/currency.lua")
 local currencyChunk,currencyCompileError=loadstring(currencySource)
@@ -69,10 +69,13 @@ if task and task.spawn then
     task.spawn(function()
         task.wait(5)
         local ok,status=pcall(currency.status)
-        if ok and status and status.value==nil then
-            print("[0xVyrs Tycoon Test] currency still learning // candidates="..tostring(status.candidates or 0))
-            for i,item in ipairs(status.top or {}) do
-                print(string.format("[0xVyrs Tycoon Test] cash candidate #%d value=%s source=%s correlation=%s path=%s",i,tostring(item.value),tostring(item.source),tostring(item.correlation),tostring(item.path)))
+        if ok and status then
+            print(string.format("[0xVyrs Tycoon Test] CURRENCY STATE // value=%s source=%s reason=%s identity=%s localRows=%s candidates=%s",
+                tostring(status.value),tostring(status.source),tostring(status.reason),tostring(status.identityScore or 0),tostring(status.strictPlayerListCount or 0),tostring(status.candidates or 0)))
+            if status.value==nil then
+                for i,item in ipairs(status.top or {}) do
+                    print(string.format("[0xVyrs Tycoon Test] cash candidate #%d value=%s source=%s correlation=%s rowScore=%s path=%s",i,tostring(item.value),tostring(item.source),tostring(item.correlation),tostring(item.rowScore),tostring(item.path)))
+                end
             end
         end
     end)
@@ -113,5 +116,5 @@ if task and task.spawn then
     end)
 end
 
-print("[0xVyrs Tycoon Test] deep hardening active // remote-first // adaptive currency // purchase compatibility")
+print("[0xVyrs Tycoon Test] deep hardening active // strict local-player currency // purchase compatibility")
 return chunk()
