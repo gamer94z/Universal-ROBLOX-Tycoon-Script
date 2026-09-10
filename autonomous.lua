@@ -2,7 +2,7 @@
 	Copyright (c) 2026 gamer94z / 0xVyrs
 	All Rights Reserved.
 
-	0xVyrs Tycoon Autonomous Runtime
+	0xVyrs Tycoon Autonomous Runtime v1.0.0
 	Adaptive progression, ROI learning, rewards and recovery.
 ]]
 
@@ -23,7 +23,7 @@ local ACTIVE_TOKEN = "autonomous:" .. tostring(os.clock())
 SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN = ACTIVE_TOKEN
 
 local CONFIG = {
-	version = "0.3.0-dev",
+	version = "1.0.0",
 	enabled = false,
 	autoCollect = true,
 	autoBuy = true,
@@ -56,7 +56,7 @@ local CONFIG = {
 	strategy = "Fastest",
 
 	moduleBaseUrl = tostring(SHARED_ENV.__VYRS_TYCOON_MODULE_BASE_URL
-		or "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/core-hardening/tycoon_modules"),
+		or "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/main/tycoon_modules"),
 }
 
 local SETTINGS_FILE = "tycoon_settings.json"
@@ -684,4 +684,4 @@ spawn(function()
 	end
 end)
 
-print("[0xVyrs Tycoon] Autonomous v0.3 loaded. Use the dashboard START button to begin.")
+print("[0xVyrs Tycoon] v1.0.0 loaded. Use the dashboard START button to begin.")
