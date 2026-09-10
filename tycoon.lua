@@ -15,6 +15,11 @@ local SHARED_ENV = (type(getgenv) == "function" and getgenv())
 	or (type(getfenv) == "function" and getfenv(0))
 	or _G
 
+local previousCleanup = SHARED_ENV.__VYRS_TYCOON_CLEANUP
+if type(previousCleanup) == "function" then
+	pcall(previousCleanup)
+end
+
 local ACTIVE_TOKEN = tostring(os.clock())
 SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN = ACTIVE_TOKEN
 
@@ -43,7 +48,8 @@ local CONFIG = {
 	maxLabels = 12,
 	uiOffsetX = 24,
 	uiOffsetY = 180,
-	moduleBaseUrl = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/main/tycoon_modules",
+	moduleBaseUrl = tostring(SHARED_ENV.__VYRS_TYCOON_MODULE_BASE_URL
+		or "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/main/tycoon_modules"),
 }
 
 local SETTINGS_FILE = "tycoon_settings.json"
@@ -77,7 +83,7 @@ local function loadSettings()
 	end
 
 	for key, value in pairs(source) do
-		if CONFIG[key] ~= nil and key ~= "version" and key ~= "enabled" then
+		if CONFIG[key] ~= nil and key ~= "version" and key ~= "enabled" and key ~= "moduleBaseUrl" then
 			CONFIG[key] = value
 		end
 	end
@@ -98,15 +104,17 @@ local function saveSettings()
 			end
 		end)
 	end
+
 	for key, value in pairs(CONFIG) do
-		if key ~= "version" then
+		if key ~= "version" and key ~= "moduleBaseUrl" then
 			payload[key] = value
 		end
 	end
+
 	payload.placeConfigs = payload.placeConfigs or {}
 	payload.placeConfigs[tostring(game.PlaceId)] = {}
 	for key, value in pairs(CONFIG) do
-		if key ~= "version" and key ~= "placeConfigs" then
+		if key ~= "version" and key ~= "moduleBaseUrl" and key ~= "placeConfigs" then
 			payload.placeConfigs[tostring(game.PlaceId)][key] = value
 		end
 	end
@@ -190,8 +198,8 @@ local function getLeaderstatValue(names)
 	end
 
 	for _, item in ipairs(leaderstats:GetChildren()) do
-		local lower = item.Name:lower()
-		if (lower:find("cash") or lower:find("money") or lower:find("coin")) and tonumber(item.Value) then
+		local name = item.Name:lower()
+		if (name:find("cash") or name:find("money") or name:find("coin")) and tonumber(item.Value) then
 			return tonumber(item.Value)
 		end
 	end
@@ -288,6 +296,7 @@ if type(scanner.scan) ~= "function"
 	or type(stats.get) ~= "function" then
 	error("[0xVyrs Tycoon] Module contract failed")
 end
+
 local runtime = {
 	lastScan = 0,
 	lastCollect = 0,
@@ -335,6 +344,7 @@ ui.onToggle("showWaypoint", function(value)
 end)
 ui.onToggle("requireOwnerMatch", function(value)
 	CONFIG.requireOwnerMatch = value
+	runtime.lastScan = -math.huge
 	saveSettings()
 end)
 ui.onToggle("autoLoadGamePreset", function(value)
@@ -354,27 +364,55 @@ ui.onCycle("collectMode", function(value)
 	saveSettings()
 end)
 
+local heartbeatConnection
+local cleanedUp = false
+
 local function cleanup()
-	upgrades.clear()
-	upgrades.clearLabels()
+	if cleanedUp then
+		return
+	end
+	cleanedUp = true
+
+	if heartbeatConnection then
+		pcall(function()
+			heartbeatConnection:Disconnect()
+		end)
+		heartbeatConnection = nil
+	end
+
+	runSafe("highlight clear", upgrades.clear)
+	runSafe("label clear", upgrades.clearLabels)
+	runSafe("waypoint hide", upgrades.hideWaypoint)
+	if type(upgrades.destroy) == "function" then
+		runSafe("upgrades destroy", upgrades.destroy)
+	end
 	if ui and ui.destroy then
-		ui.destroy()
+		runSafe("ui destroy", ui.destroy)
+	end
+
+	if SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN then
+		SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN = nil
+	end
+	if SHARED_ENV.__VYRS_TYCOON_CLEANUP == cleanup then
+		SHARED_ENV.__VYRS_TYCOON_CLEANUP = nil
 	end
 end
 
+SHARED_ENV.__VYRS_TYCOON_CLEANUP = cleanup
+
 local function isActiveToken()
-	return SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN
+	return SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN == ACTIVE_TOKEN and not cleanedUp
 end
 
 local function collectAllowed(data)
-	return data and data.ownerMatch == true
+	return data and data.automationAllowed == true
 end
 
 local function buyAllowed(data)
-	return data and data.ownerVerified == true
+	return data and data.automationAllowed == true
 end
 
-RunService.Heartbeat:Connect(function(deltaTime)
+heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 	if not isActiveToken() then
 		cleanup()
 		return
@@ -398,6 +436,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 	if CONFIG.enabled and runtime.data then
 		runtime.wasEnabled = true
 		runtime.data.showLabels = CONFIG.showLabels
+
 		if now - runtime.lastRender >= CONFIG.renderInterval then
 			runtime.lastRender = now
 			if CONFIG.highlightAffordable then
@@ -417,7 +456,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		if buyAllowed(runtime.data) and CONFIG.autoBuy and now - runtime.lastBuy >= CONFIG.buyInterval then
 			runtime.lastBuy = now
 			local target = upgrades.choosePurchase(runtime.data, getLocalRoot(), CONFIG.buyMode)
-			if target and collector.buyButton(context, target) then
+			if target and runSafe("buy", collector.buyButton, context, target) then
 				runtime.bought = runtime.bought + 1
 			end
 		end
@@ -441,7 +480,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 			cheapest = runtime.cheapest,
 			bestValue = runtime.bestValue,
 			nextLocked = runtime.nextLocked,
-			stats = {},
+			stats = runSafe("stats get", stats.get) or {},
 			collected = runtime.collected,
 			bought = runtime.bought,
 		})
@@ -456,6 +495,8 @@ spawn(function()
 		else
 			wait(15)
 		end
-		saveSettings()
+		if isActiveToken() then
+			saveSettings()
+		end
 	end
 end)
