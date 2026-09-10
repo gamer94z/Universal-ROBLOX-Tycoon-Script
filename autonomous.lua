@@ -3,7 +3,7 @@
 	All Rights Reserved.
 
 	0xVyrs Tycoon Autonomous Runtime
-	Adaptive progression, learning and recovery.
+	Adaptive progression, ROI learning, rewards and recovery.
 ]]
 
 local Players = game:GetService("Players")
@@ -23,7 +23,7 @@ local ACTIVE_TOKEN = "autonomous:" .. tostring(os.clock())
 SHARED_ENV.__VYRS_TYCOON_ACTIVE_TOKEN = ACTIVE_TOKEN
 
 local CONFIG = {
-	version = "0.2.0-dev",
+	version = "0.3.0-dev",
 	enabled = false,
 	autoCollect = true,
 	autoBuy = true,
@@ -39,7 +39,7 @@ local CONFIG = {
 	scanInterval = 8,
 	renderInterval = 1,
 	uiInterval = 0.5,
-	statsInterval = 1,
+	statsInterval = 0.9,
 	collectInterval = 0.5,
 	buyInterval = 0.5,
 	maxButtons = 80,
@@ -51,14 +51,16 @@ local CONFIG = {
 	autopilotEnabled = true,
 	learningEnabled = true,
 	burstMode = true,
+	autoRewards = true,
 	autoRebirth = false,
+	strategy = "Fastest",
 
 	moduleBaseUrl = tostring(SHARED_ENV.__VYRS_TYCOON_MODULE_BASE_URL
 		or "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/core-hardening/tycoon_modules"),
 }
 
 local SETTINGS_FILE = "tycoon_settings.json"
-local MODULE_NAMES = { "scanner", "ui", "collector", "upgrades", "stats", "brain", "autopilot" }
+local MODULE_NAMES = { "scanner", "ui", "collector", "upgrades", "stats", "brain", "autopilot", "boosts" }
 
 local function canUseFileApi()
 	return type(isfile) == "function" and type(readfile) == "function" and type(writefile) == "function"
@@ -76,6 +78,9 @@ local function loadSettings()
 		if CONFIG[key] ~= nil and key ~= "version" and key ~= "enabled" and key ~= "moduleBaseUrl" then
 			CONFIG[key] = value
 		end
+	end
+	if CONFIG.strategy ~= "Fastest" and CONFIG.strategy ~= "Income" and CONFIG.strategy ~= "Rebirth" then
+		CONFIG.strategy = "Fastest"
 	end
 	CONFIG.enabled = false
 end
@@ -207,11 +212,12 @@ local collector = init(factories.collector)
 local upgrades = init(factories.upgrades)
 local brain = init(factories.brain)
 local autopilot = init(factories.autopilot)
+local boosts = init(factories.boosts)
 local ui = safe("ui init", factories.ui, context)
 local stats = safe("stats init", factories.stats, context)
 
 if type(scanner) ~= "table" or type(collector) ~= "table" or type(upgrades) ~= "table"
-	or type(brain) ~= "table" or type(autopilot) ~= "table"
+	or type(brain) ~= "table" or type(autopilot) ~= "table" or type(boosts) ~= "table"
 	or type(ui) ~= "table" or type(stats) ~= "table" then
 	error("[0xVyrs Tycoon] Autonomous module init failed")
 end
@@ -224,15 +230,18 @@ local runtime = {
 	nextLocked = nil,
 	plannedTarget = nil,
 	planScore = nil,
+	brainStatus = nil,
 	lastScan = -math.huge,
 	lastRender = -math.huge,
 	lastUi = -math.huge,
 	lastStats = -math.huge,
 	lastBuy = -math.huge,
 	lastCollect = -math.huge,
+	lastRewardSweep = -math.huge,
 	lastCashConnect = -math.huge,
 	bought = 0,
 	collected = 0,
+	rewardsActivated = 0,
 	purchaseAttempts = 0,
 	purchaseFailures = 0,
 	scanCount = 0,
@@ -240,6 +249,7 @@ local runtime = {
 	scanDirtyAt = 0,
 	buyBusy = false,
 	collectBusy = false,
+	rewardBusy = false,
 	scanBusy = false,
 	wasEnabled = false,
 	watchedRoot = nil,
@@ -315,15 +325,28 @@ local function updateCashState()
 	local cash = getCash()
 	if cash == nil then return end
 	runtime.data.cash = cash
+	local affordable, locked = 0, 0
 	for _, button in ipairs(runtime.data.buttons or {}) do
 		if not button.paidPurchase then
 			local price = tonumber(button.price)
 			if price then
 				button.affordable = price <= cash
 				button.locked = price > cash
+				if button.affordable then affordable = affordable + 1 elseif button.locked then locked = locked + 1 end
 			end
 		end
 	end
+	runtime.data.affordableCount = affordable
+	runtime.data.lockedCount = locked
+end
+
+local function refreshBrainStatus()
+	if CONFIG.learningEnabled then
+		runtime.brainStatus = safe("brain status", brain.getStatus, runtime.data, statsState())
+	else
+		runtime.brainStatus = nil
+	end
+	return runtime.brainStatus
 end
 
 local function connectCashWatch()
@@ -368,6 +391,7 @@ local function performScan(now)
 		safe("recovery", autopilot.updateRecovery, scanned)
 	end
 	refreshTargets()
+	refreshBrainStatus()
 	runtime.scanBusy = false
 end
 
@@ -375,9 +399,11 @@ local function setEnabled(value)
 	CONFIG.enabled = value == true
 	safe("autopilot enabled", autopilot.noteEnabled, CONFIG.enabled)
 	if CONFIG.enabled then
+		if CONFIG.learningEnabled and brain.beginRun then safe("brain begin run", brain.beginRun, CONFIG.strategy) end
 		markScanDirty(true)
 		runtime.lastBuy = -math.huge
 		runtime.lastCollect = -math.huge
+		runtime.lastRewardSweep = -math.huge
 		connectCashWatch()
 	end
 	saveSettings()
@@ -398,30 +424,49 @@ end
 
 local function resetLearning()
 	local result = safe("brain reset", brain.resetPlaceProfile)
+	if CONFIG.enabled and brain.beginRun then safe("brain begin run", brain.beginRun, CONFIG.strategy) end
 	refreshTargets()
+	refreshBrainStatus()
 	return result ~= false
 end
 
+local function setStrategy(value)
+	if value ~= "Fastest" and value ~= "Income" and value ~= "Rebirth" then return CONFIG.strategy end
+	CONFIG.strategy = value
+	refreshTargets()
+	refreshBrainStatus()
+	saveSettings()
+	return CONFIG.strategy
+end
+
 ui.onToggle("enabled", setEnabled)
-ui.onToggle("autoCollect", function(v) CONFIG.autoCollect = v; saveSettings() end)
-ui.onToggle("autoBuy", function(v) CONFIG.autoBuy = v; saveSettings() end)
-ui.onToggle("highlightAffordable", function(v) CONFIG.highlightAffordable = v; saveSettings() end)
-ui.onToggle("showLabels", function(v) CONFIG.showLabels = v; saveSettings() end)
-ui.onToggle("showWaypoint", function(v) CONFIG.showWaypoint = v; saveSettings() end)
+ui.onToggle("autoCollect", function(v) CONFIG.autoCollect = v saveSettings() end)
+ui.onToggle("autoBuy", function(v) CONFIG.autoBuy = v saveSettings() end)
+ui.onToggle("highlightAffordable", function(v) CONFIG.highlightAffordable = v saveSettings() end)
+ui.onToggle("showLabels", function(v) CONFIG.showLabels = v saveSettings() end)
+ui.onToggle("showWaypoint", function(v) CONFIG.showWaypoint = v saveSettings() end)
 ui.onToggle("requireOwnerMatch", function(v)
 	CONFIG.requireOwnerMatch = v
 	if scanner.invalidateRoot then safe("owner invalidate", scanner.invalidateRoot) end
 	markScanDirty(true)
 	saveSettings()
 end)
-ui.onToggle("autopilotEnabled", function(v) CONFIG.autopilotEnabled = v; refreshTargets(); saveSettings() end)
-ui.onToggle("learningEnabled", function(v) CONFIG.learningEnabled = v; refreshTargets(); saveSettings() end)
-ui.onToggle("burstMode", function(v) CONFIG.burstMode = v; saveSettings() end)
-ui.onToggle("autoRebirth", function(v) CONFIG.autoRebirth = v; saveSettings() end)
-ui.onToggle("autoLoadGamePreset", function(v) CONFIG.autoLoadGamePreset = v; saveSettings() end)
-ui.onCycle("buyMode", function(v) CONFIG.buyMode = v; refreshTargets(); saveSettings() end)
-ui.onCycle("touchMode", function(v) CONFIG.touchMode = v; saveSettings() end)
-ui.onCycle("collectMode", function(v) CONFIG.collectMode = v; saveSettings() end)
+ui.onToggle("autopilotEnabled", function(v) CONFIG.autopilotEnabled = v refreshTargets() saveSettings() end)
+ui.onToggle("learningEnabled", function(v)
+	CONFIG.learningEnabled = v
+	if v and CONFIG.enabled and brain.beginRun then safe("brain begin run", brain.beginRun, CONFIG.strategy) end
+	refreshTargets()
+	refreshBrainStatus()
+	saveSettings()
+end)
+ui.onToggle("burstMode", function(v) CONFIG.burstMode = v saveSettings() end)
+ui.onToggle("autoRewards", function(v) CONFIG.autoRewards = v saveSettings() end)
+ui.onToggle("autoRebirth", function(v) CONFIG.autoRebirth = v saveSettings() end)
+ui.onToggle("autoLoadGamePreset", function(v) CONFIG.autoLoadGamePreset = v saveSettings() end)
+ui.onCycle("strategy", setStrategy)
+ui.onCycle("buyMode", function(v) CONFIG.buyMode = v refreshTargets() saveSettings() end)
+ui.onCycle("touchMode", function(v) CONFIG.touchMode = v saveSettings() end)
+ui.onCycle("collectMode", function(v) CONFIG.collectMode = v saveSettings() end)
 if type(ui.onAction) == "function" then
 	ui.onAction("start", start)
 	ui.onAction("stop", stop)
@@ -429,15 +474,19 @@ if type(ui.onAction) == "function" then
 end
 
 local function status()
+	local brainState = runtime.brainStatus or refreshBrainStatus()
 	return {
 		version = CONFIG.version,
 		enabled = CONFIG.enabled,
 		autopilotEnabled = CONFIG.autopilotEnabled,
-		autoBuy = CONFIG.autoBuy,
-		autoCollect = CONFIG.autoCollect,
+		learningEnabled = CONFIG.learningEnabled,
+		burstMode = CONFIG.burstMode,
+		autoRewards = CONFIG.autoRewards,
 		autoRebirth = CONFIG.autoRebirth,
+		strategy = CONFIG.strategy,
 		bought = runtime.bought,
 		collected = runtime.collected,
+		rewardsActivated = runtime.rewardsActivated,
 		purchaseAttempts = runtime.purchaseAttempts,
 		purchaseFailures = runtime.purchaseFailures,
 		scanCount = runtime.scanCount,
@@ -445,8 +494,9 @@ local function status()
 		ownerVerified = runtime.data and runtime.data.ownerVerified or false,
 		buttons = runtime.data and runtime.data.totalButtons or 0,
 		cash = runtime.data and runtime.data.cash or getCash(),
-		brain = safe("brain status", brain.getStatus, runtime.data, statsState()),
+		brain = brainState,
 		autopilot = safe("autopilot status", autopilot.getStatus),
+		boosts = safe("boost status", boosts.getStatus),
 	}
 end
 
@@ -475,10 +525,12 @@ SHARED_ENV.__VYRS_TYCOON_AUTONOMOUS = {
 	start = start,
 	stop = stop,
 	setEnabled = setEnabled,
-	setAutopilot = function(v) CONFIG.autopilotEnabled = v == true; refreshTargets(); saveSettings(); return CONFIG.autopilotEnabled end,
-	setAutoRebirth = function(v) CONFIG.autoRebirth = v == true; saveSettings(); return CONFIG.autoRebirth end,
-	setLearning = function(v) CONFIG.learningEnabled = v == true; refreshTargets(); saveSettings(); return CONFIG.learningEnabled end,
-	setBurst = function(v) CONFIG.burstMode = v == true; saveSettings(); return CONFIG.burstMode end,
+	setAutopilot = function(v) CONFIG.autopilotEnabled = v == true refreshTargets() saveSettings() return CONFIG.autopilotEnabled end,
+	setAutoRebirth = function(v) CONFIG.autoRebirth = v == true saveSettings() return CONFIG.autoRebirth end,
+	setAutoRewards = function(v) CONFIG.autoRewards = v == true saveSettings() return CONFIG.autoRewards end,
+	setLearning = function(v) CONFIG.learningEnabled = v == true refreshTargets() saveSettings() return CONFIG.learningEnabled end,
+	setBurst = function(v) CONFIG.burstMode = v == true saveSettings() return CONFIG.burstMode end,
+	setStrategy = setStrategy,
 	resetLearning = resetLearning,
 	status = status,
 	cleanup = cleanup,
@@ -505,6 +557,10 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 	if CONFIG.enabled and now - runtime.lastStats >= CONFIG.statsInterval then
 		runtime.lastStats = now
 		safe("stats update", stats.update, deltaTime)
+		if CONFIG.learningEnabled and brain.observeEconomy then
+			safe("brain economy", brain.observeEconomy, getCash(), statsState())
+			runtime.brainStatus = safe("brain status", brain.getStatus, runtime.data, statsState())
+		end
 	end
 
 	if CONFIG.enabled then
@@ -523,10 +579,20 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		local complete = safe("completion", autopilot.updateCompletion, brain, runtime.data) == true
 		if complete then
 			safe("record completion", autopilot.recordCompletion, brain)
+			refreshBrainStatus()
 			if CONFIG.autoRebirth and not runtime.buyBusy and safe("auto rebirth", autopilot.tryRebirth, runtime.data) then
 				if scanner.invalidateRoot then safe("rebirth invalidate", scanner.invalidateRoot) end
+				if CONFIG.learningEnabled and brain.beginRun then safe("brain begin run", brain.beginRun, CONFIG.strategy) end
 				markScanDirty(true)
 			end
+		end
+
+		if CONFIG.autoRewards and not runtime.rewardBusy and now - runtime.lastRewardSweep >= 2.5 then
+			runtime.lastRewardSweep = now
+			runtime.rewardBusy = true
+			local activated = safe("free rewards", boosts.sweep, runtime.data) or 0
+			runtime.rewardsActivated = runtime.rewardsActivated + activated
+			runtime.rewardBusy = false
 		end
 
 		if now - runtime.lastRender >= CONFIG.renderInterval then
@@ -545,9 +611,10 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 			end
 		end
 
+		local brainState = runtime.brainStatus
 		local buyInterval = CONFIG.buyInterval
 		if CONFIG.autopilotEnabled and CONFIG.burstMode then
-			buyInterval = safe("buy interval", autopilot.getBuyInterval, runtime.data) or buyInterval
+			buyInterval = safe("buy interval", autopilot.getBuyInterval, runtime.data, brainState) or buyInterval
 		end
 		if CONFIG.autoBuy and runtime.data.automationAllowed and not complete
 			and not runtime.buyBusy and now - runtime.lastBuy >= buyInterval then
@@ -559,6 +626,7 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 				runtime.purchaseAttempts = runtime.purchaseAttempts + 1
 				if safe("buy", collector.buyButton, context, target) == true then
 					runtime.bought = runtime.bought + 1
+					if stats.noteSpend then safe("record spend", stats.noteSpend, target.price) end
 					if CONFIG.learningEnabled then safe("learn purchase", brain.notePurchase, target, runtime.data, statsState()) end
 					markScanDirty(true)
 					if CONFIG.burstMode then runtime.lastBuy = -math.huge end
@@ -572,7 +640,7 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 
 		local collectInterval = CONFIG.collectInterval
 		if CONFIG.autopilotEnabled then
-			collectInterval = safe("collect interval", autopilot.getCollectInterval, runtime.data) or collectInterval
+			collectInterval = safe("collect interval", autopilot.getCollectInterval, runtime.data, brainState) or collectInterval
 		end
 		if CONFIG.autoCollect and runtime.data.automationAllowed and not runtime.collectBusy
 			and now - runtime.lastCollect >= collectInterval then
@@ -590,6 +658,7 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 
 	if now - runtime.lastUi >= CONFIG.uiInterval then
 		runtime.lastUi = now
+		refreshBrainStatus()
 		safe("ui update", ui.update, {
 			data = runtime.data,
 			nearest = runtime.plannedTarget or runtime.nearest,
@@ -615,4 +684,4 @@ spawn(function()
 	end
 end)
 
-print("[0xVyrs Tycoon] Autonomous runtime loaded. Use the dashboard START button to begin.")
+print("[0xVyrs Tycoon] Autonomous v0.3 loaded. Use the dashboard START button to begin.")
