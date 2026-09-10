@@ -5,7 +5,7 @@ local env=(type(getgenv)=="function" and getgenv()) or (type(getfenv)=="function
 local Players=game:GetService("Players")
 local repo="https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/"
 local STABLE_RUNTIME="8c2e708a6faf50bc3bc7e7f038df2585d95ddc49"
-local HARDENING_COMMIT="cfbf49530b2ac502703a533201635c04aca115aa"
+local HARDENING_COMMIT="da9fd570ace003756f6254018212474fb07e5a30"
 
 local currencySource=game:HttpGet(repo..HARDENING_COMMIT.."/tycoon_modules/currency.lua")
 local currencyChunk,currencyCompileError=loadstring(currencySource)
@@ -76,7 +76,42 @@ if task and task.spawn then
             end
         end
     end)
+
+    task.spawn(function()
+        local deadline=os.clock()+45
+        while os.clock()<deadline do
+            task.wait(1)
+            local api=env.__VYRS_TYCOON_AUTONOMOUS
+            local ok,status=api and type(api.status)=="function" and pcall(api.status)
+            if ok and status and status.enabled then
+                task.wait(5)
+                local runtime=env.__VYRS_TYCOON_DIAGNOSTICS
+                local data=runtime and runtime.data
+                local target=runtime and runtime.plannedTarget
+                print(string.format("[0xVyrs Tycoon Test] BUY STATE // attempts=%s failures=%s bought=%s cash=%s buttons=%s affordable=%s locked=%s target=%s",
+                    tostring(runtime and runtime.purchaseAttempts or 0),
+                    tostring(runtime and runtime.purchaseFailures or 0),
+                    tostring(runtime and runtime.bought or 0),
+                    tostring(data and data.cash or "?"),
+                    tostring(data and data.totalButtons or 0),
+                    tostring(data and data.affordableCount or 0),
+                    tostring(data and data.lockedCount or 0),
+                    tostring(target and target.name or "nil")))
+                if runtime and (runtime.bought or 0)==0 and data then
+                    for i=1,math.min(5,#(data.buttons or {})) do
+                        local b=data.buttons[i]
+                        local kind=(b.prompt and b.prompt.Parent and "prompt") or (b.clickDetector and b.clickDetector.Parent and "click") or (b.touchPart and b.touchPart.Parent and "touch") or "none"
+                        local blocked=(b.blockedUntil and math.max(0,b.blockedUntil-os.clock())) or 0
+                        local path=b.object and b.object.Parent and b.object:GetFullName() or "?"
+                        print(string.format("[0xVyrs Tycoon Test] BUTTON #%d // %s // price=%s affordable=%s kind=%s retry=%.1fs path=%s",
+                            i,tostring(b.name),tostring(b.price),tostring(b.affordable),kind,blocked,path))
+                    end
+                end
+                return
+            end
+        end
+    end)
 end
 
-print("[0xVyrs Tycoon Test] deep hardening active // remote-first // adaptive currency // specific-root scanner")
+print("[0xVyrs Tycoon Test] deep hardening active // remote-first // adaptive currency // purchase compatibility")
 return chunk()
