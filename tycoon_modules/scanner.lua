@@ -4,7 +4,7 @@ return function()
 	local MAX_LOCAL_INSPECT = 32
 	local ROOT_MIN_SCORE = 12
 	local HEAVY_SCAN_COOLDOWN = 1.35
-	local EMPTY_SCAN_COOLDOWN = 2.5
+	local EMPTY_SCAN_COOLDOWN = 5
 
 	local knownRoot, knownMeta, lastResult
 	local lastHeavyScan = -math.huge
@@ -82,9 +82,7 @@ return function()
 				if priceName(key) then local n=parseNumber(value); if n~=nil then return n end end
 			end
 		end
-		if (o:IsA("IntValue") or o:IsA("NumberValue") or o:IsA("StringValue")) and priceName(o.Name) then
-			return parseNumber(o.Value)
-		end
+		if (o:IsA("IntValue") or o:IsA("NumberValue") or o:IsA("StringValue")) and priceName(o.Name) then return parseNumber(o.Value) end
 		if o:IsA("TextLabel") or o:IsA("TextButton") then
 			if currencyText(o.Text) or (allowBare and bareNumberText(o.Text)) then return parseNumber(o.Text) end
 		end
@@ -155,6 +153,13 @@ return function()
 		return nil
 	end
 
+	local function ownerCandidate(o)
+		if not o then return false end
+		if isContainer(o) or o:IsA("ObjectValue") or o:IsA("StringValue") or o:IsA("IntValue") or o:IsA("NumberValue")
+			or o:IsA("TextLabel") or o:IsA("TextButton") then return true end
+		local name=lower(o.Name)
+		return name:find("owner",1,true)~=nil or name:find("userid",1,true)~=nil or name=="player"
+	end
 	local function ownerValue(context,value)
 		if typeof(value)=="Instance" then return value==context.LOCAL_PLAYER end
 		if type(value)=="number" then return tonumber(value)==context.LOCAL_PLAYER.UserId end
@@ -165,6 +170,7 @@ return function()
 		return false
 	end
 	local function ownerSignal(context,o)
+		if not ownerCandidate(o) then return false end
 		local a=attrs(o)
 		if a then
 			for key,value in pairs(a) do
@@ -209,7 +215,7 @@ return function()
 		local descendants=workspace:GetDescendants(); local interactions={}; local owners={}
 		for _,o in ipairs(descendants) do
 			if isInteraction(o) then table.insert(interactions,o) end
-			if ownerSignal(context,o) then table.insert(owners,o) end
+			if ownerCandidate(o) and ownerSignal(context,o) then table.insert(owners,o) end
 		end
 		return descendants,interactions,owners
 	end
@@ -352,7 +358,7 @@ return function()
 	local function scanRoot(context,root,meta,mode)
 		local started=os.clock(); local descendants=root:GetDescendants()
 		local explicit=meta and meta.ownerVerified==true or ownerSignal(context,root)
-		if not explicit then for _,o in ipairs(descendants) do if ownerSignal(context,o) then explicit=true; break end end end
+		if not explicit then for _,o in ipairs(descendants) do if ownerCandidate(o) and ownerSignal(context,o) then explicit=true; break end end end
 		local spatial=meta and meta.spatialOwner==true; local verified=explicit or spatial; local allowed=verified or context.CONFIG.requireOwnerMatch==false
 		local data={root=root,rootName=root.Name,confidence=math.clamp(meta and meta.rawScore or 0,0,100),rootScore=meta and meta.rawScore or 0,structuralScore=meta and meta.structuralScore or 0,ownerMatch=verified,ownerVerified=verified,ownerSource=explicit and "owner" or (spatial and "position-cluster" or "structure"),selectedByPosition=spatial,automationAllowed=allowed,safeAutomation=allowed,buttons={},drops={},cash=tonumber(context.getCash()),owned=verified,maxLabels=context.CONFIG.maxLabels or 16,paidSkipped=0,scanMode=mode or "root",rootInteractions=meta and meta.interactions or 0,rootPriced=meta and meta.priced or 0,rootFamily=meta and meta.maxFamily or 0}
 		if allowed then collectCandidates(root,descendants,data,context) end
