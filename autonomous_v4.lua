@@ -1,7 +1,7 @@
 --[[
-    0xVyrs Tycoon Autonomous Runtime v4
-    Clean audited runtime: canonical module names, one target authority,
-    structured purchase outcomes, persistent interaction state and health diagnostics.
+    0xVyrs Tycoon Autonomous Runtime v4.1
+    Canonical audited runtime: one module path, one target authority,
+    structured purchase outcomes, live-cash gating and isolated workers.
 ]]
 
 local Players=game:GetService("Players")
@@ -10,13 +10,13 @@ local HttpService=game:GetService("HttpService")
 local LOCAL_PLAYER=Players.LocalPlayer
 local ENV=(type(getgenv)=="function" and getgenv()) or (type(getfenv)=="function" and getfenv(0)) or _G
 
-local RUNTIME_VERSION="4.0-audit1"
-local MODULE_MANIFEST={scanner="audited-v3",currency="strict-v3",collector="evidence-v4",brain="audited-v3"}
+local RUNTIME_VERSION="4.1-audit2"
+local MODULE_MANIFEST={scanner="v4.1",currency="strict-canonical",collector="v4.1",brain="planner-canonical",stats="v4.1"}
 
 local previousCleanup=ENV.__VYRS_TYCOON_CLEANUP
 if type(previousCleanup)=="function" then pcall(previousCleanup) end
 
-local TOKEN="core-v4:"..tostring(os.clock())
+local TOKEN="core-v4.1:"..tostring(os.clock())
 ENV.__VYRS_TYCOON_ACTIVE_TOKEN=TOKEN
 
 local CONFIG={
@@ -65,7 +65,7 @@ local function safe(label,fn,...)
     if type(fn)~="function" then return nil end
     local ok,a,b,c=pcall(fn,...)
     if not ok then
-        warn("[0xVyrs Tycoon v4] "..label.." failed: "..tostring(a))
+        warn("[0xVyrs Tycoon v4.1] "..label.." failed: "..tostring(a))
         return nil
     end
     return a,b,c
@@ -137,8 +137,8 @@ end
 
 local function loadFactory(name)
     local source,origin=fetchSource(name)
-    local chunk,err=loadstring(source)
-    if type(chunk)~="function" then error(name.." compile failed: "..tostring(err)) end
+    local chunk,compileError=loadstring(source)
+    if type(chunk)~="function" then error(name.." compile failed: "..tostring(compileError)) end
     local ok,result=pcall(chunk)
     if not ok then error(name.." load failed: "..tostring(result)) end
     return result,origin
@@ -220,7 +220,7 @@ local S={
     bought=0,
     collected=0,
     rewardsActivated=0,
-    purchaseAttempts=0,
+    purchaseDispatches=0,
     purchaseFailures=0,
     deferredPurchases=0,
     blockedPurchases=0,
@@ -240,10 +240,8 @@ local S={
     lastUi=-math.huge,
     lastStats=-math.huge,
     lastReward=-math.huge,
-    lastHealth=-math.huge,
     buyGate="initialising",
     lastOutcome=nil,
-    lastHealthLine=nil,
     rootConnections={},
     connections={},
     purchaseStates=setmetatable({}, {__mode="k"}),
@@ -280,12 +278,13 @@ local function stateFor(button)
     local signature=buttonSignature(button)
     local state=S.purchaseStates[key]
     if not state or state.signature~=signature then
-        state={signature=signature,failures=0,blockedUntil=nil,permanent=false,lastReason=nil,lastEvidence=nil,learned=false,phase="ready"}
+        state={signature=signature,failures=0,blockedUntil=nil,lastReason=nil,lastEvidence=nil,learned=false,phase="ready"}
         S.purchaseStates[key]=state
     end
     if state.blockedUntil and state.blockedUntil<=os.clock() then
         state.blockedUntil=nil
-        if not state.permanent then state.phase="ready" end
+        state.phase="ready"
+        state.lastEvidence=nil
     end
     return state
 end
@@ -305,8 +304,11 @@ local function normalise(data)
     data.maxLabels=CONFIG.maxLabels
     data.automationAllowed=(data.ownerVerified==true) or CONFIG.requireOwnerMatch==false
     data.safeAutomation=data.automationAllowed
+
+    -- Live currency is authoritative. Never retain an old scan's balance when
+    -- the resolver becomes unknown or loses identity verification.
     local cash=tonumber(getCash())
-    if cash~=nil then data.cash=cash end
+    data.cash=cash
 
     for index=#(data.buttons or {}),1,-1 do
         local button=data.buttons[index]
@@ -319,11 +321,13 @@ local function normalise(data)
             button.failureCount=state and state.failures or 0
             button.blockedUntil=state and state.blockedUntil or nil
             button.approaching=state and state.phase=="approaching" or false
-            button.runtimeBlocked=state and state.permanent or false
             local price=tonumber(button.price)
-            if price~=nil and cash~=nil then
-                button.affordable=price<=cash
-                button.locked=price>cash
+            if price~=nil then
+                button.affordable=(price==0) or (cash~=nil and price<=cash)
+                button.locked=cash~=nil and price>cash or false
+            else
+                button.affordable=false
+                button.locked=false
             end
         end
     end
@@ -337,11 +341,9 @@ local function normalise(data)
         end
     end
 
-    local affordable=0
-    local locked=0
+    local affordable,locked=0,0
     for _,button in ipairs(data.buttons or {}) do
-        local state=stateFor(button)
-        if button.affordable and not button.paidPurchase and not (state and state.permanent) then affordable=affordable+1
+        if button.affordable and not button.paidPurchase then affordable=affordable+1
         elseif button.locked and not button.paidPurchase then locked=locked+1 end
     end
     data.totalButtons=#(data.buttons or {})
@@ -357,7 +359,6 @@ end
 local function actionable(button)
     if not validButton(button) or button.automationAllowed~=true or button.affordable~=true then return false end
     local state=stateFor(button)
-    if state and state.permanent then return false end
     if state and state.blockedUntil and state.blockedUntil>os.clock() then return false end
     return true
 end
@@ -377,25 +378,32 @@ local function chooseTarget()
     if not S.data then S.buyGate="no-data" return nil,nil end
     normalise(S.data)
     if S.data.automationAllowed~=true then S.buyGate="owner-blocked" return nil,nil end
-    if tonumber(S.data.cash)==nil then S.buyGate="cash-unresolved" return nil,nil end
 
     local candidates={}
+    local hasPriced=false
     for _,button in ipairs(S.data.buttons or {}) do
+        if tonumber(button.price) and tonumber(button.price)>0 then hasPriced=true end
         if actionable(button) then table.insert(candidates,button) end
     end
+
+    if tonumber(S.data.cash)==nil then
+        local free={}
+        for _,button in ipairs(candidates) do
+            if (tonumber(button.price) or 0)==0 then table.insert(free,button) end
+        end
+        candidates=free
+        if #candidates==0 and hasPriced then
+            S.buyGate="cash-unresolved"
+            return nil,nil
+        end
+    end
+
     if #candidates==0 then
         local hasAffordable=false
-        local hasPermanent=false
         for _,button in ipairs(S.data.buttons or {}) do
-            if button.affordable and not button.paidPurchase then
-                hasAffordable=true
-                local state=stateFor(button)
-                if state and state.permanent then hasPermanent=true end
-            end
+            if button.affordable and not button.paidPurchase then hasAffordable=true break end
         end
-        if hasPermanent then S.buyGate="blocked-permanent"
-        elseif hasAffordable then S.buyGate="all-on-cooldown"
-        else S.buyGate="no-affordable" end
+        S.buyGate=hasAffordable and "all-on-cooldown" or "no-affordable"
         return nil,nil
     end
 
@@ -424,16 +432,12 @@ end
 
 local function refreshTarget(force)
     normalise(S.data)
-    if S.target and not validButton(S.target) then
+    if S.target and (not validButton(S.target) or buttonSignature(S.target)~=S.targetSignature) then
         S.target=nil
         S.targetSignature=nil
         S.targetPhase="idle"
     end
-    if S.target and buttonSignature(S.target)~=S.targetSignature then
-        S.target=nil
-        S.targetSignature=nil
-        S.targetPhase="idle"
-    end
+
     if force or not S.target or not actionable(S.target) then
         local chosen,score=chooseTarget()
         if chosen then
@@ -494,8 +498,9 @@ local function scanNow()
         refreshTarget(true)
         refreshBrain()
     else
-        if not ok then warn("[0xVyrs Tycoon v4] scanner failed: "..tostring(result)) end
+        if not ok then warn("[0xVyrs Tycoon v4.1] scanner failed: "..tostring(result)) end
         S.scanRequested=false
+        requestScan(1.0,"scanner-retry")
     end
     S.scanBusy=false
 end
@@ -504,23 +509,29 @@ local function cooldownFor(outcome,state)
     local reason=outcome and outcome.reason or "unknown"
     if outcome and outcome.status=="deferred" then
         if reason=="player-moving" then return 0.25 end
-        if reason=="cash-unresolved" or reason=="character-unavailable" then return 0.4 end
-        if reason=="too-far" or reason=="autopilot-disabled" then return 0.8 end
-        return 0.5
+        if reason=="cash-unresolved" or reason=="character-unavailable" then return 0.45 end
+        if reason=="too-far" or reason=="autopilot-disabled" then return 0.9 end
+        return 0.55
     end
+    if outcome and outcome.status=="blocked" then return 30 end
     local failures=state and state.failures or 1
-    return math.min(1.8,0.45+failures*0.22)
+    return math.min(2.0,0.5+failures*0.24)
 end
 
 local function dispatchBuy()
     if S.buyBusy then S.buyGate="busy" return end
     if not CONFIG.enabled then S.buyGate="disabled" return end
     if not CONFIG.autoBuy then S.buyGate="auto-buy-off" return end
-    if not S.data then S.buyGate="no-data" return end
+    if not S.data then S.buyGate="no-data" S.lastBuy=os.clock() return end
 
     normalise(S.data)
     local target=refreshTarget(false)
-    if not target or not actionable(target) then return end
+    if not target or not actionable(target) then
+        -- Advancing this timestamp prevents a 60 ms hot-loop while everything
+        -- is on cooldown or waiting for cash.
+        S.lastBuy=os.clock()
+        return
+    end
 
     local state=stateFor(target)
     S.buyBusy=true
@@ -528,17 +539,19 @@ local function dispatchBuy()
     S.targetPhase="dispatching"
     if state then state.phase="dispatching" end
     target.approaching=true
-    S.purchaseAttempts=S.purchaseAttempts+1
+    S.purchaseDispatches=S.purchaseDispatches+1
 
     local ok,success,outcome=pcall(collector.buyButton,context,target)
     if not ok then
+        local dispatchError=success
         success=false
-        outcome={status="failed",reason="collector-error",attempted=false,error=tostring(success)}
-        warn("[0xVyrs Tycoon v4] collector dispatch failed")
+        outcome={status="failed",reason="collector-error",attempted=false,error=tostring(dispatchError)}
+        warn("[0xVyrs Tycoon v4.1] collector dispatch failed: "..tostring(dispatchError))
     end
     if type(outcome)~="table" then
         outcome={status=success and "success" or "failed",reason=success and "confirmed" or "unknown",attempted=true}
     end
+
     S.lastOutcome=outcome
     target.approaching=false
 
@@ -551,7 +564,9 @@ local function dispatchBuy()
         local key=activationKey(target)
         if key then S.purchaseStates[key]=nil end
         requestScan(0.08,"purchase-confirmed")
-        task.delay(0.4,function() if active() and CONFIG.enabled then requestScan(0,"purchase-followup") end end)
+        task.delay(0.4,function()
+            if active() and CONFIG.enabled then requestScan(0,"purchase-followup") end
+        end)
     elseif outcome.status=="deferred" then
         S.deferredPurchases=S.deferredPurchases+1
         S.buyGate="deferred:"..tostring(outcome.reason)
@@ -563,14 +578,15 @@ local function dispatchBuy()
         end
     elseif outcome.status=="blocked" then
         S.blockedPurchases=S.blockedPurchases+1
-        S.buyGate="blocked:"..tostring(outcome.reason)
+        S.buyGate="safety-blocked:"..tostring(outcome.reason)
         S.targetPhase="blocked"
         if state then
             state.lastReason=outcome.reason
             state.lastEvidence=outcome.evidence
             state.phase="blocked"
-            state.permanent=outcome.permanent==true
-            state.blockedUntil=state.permanent and nil or (os.clock()+1.5)
+            -- Safety blocks are quarantined and revalidated later instead of
+            -- poisoning the target forever. The collector still refuses to fire.
+            state.blockedUntil=os.clock()+cooldownFor(outcome,state)
         end
         requestScan(0.2,"blocked-target")
     else
@@ -582,10 +598,13 @@ local function dispatchBuy()
             state.lastReason=outcome.reason
             state.phase="retry"
             state.blockedUntil=os.clock()+cooldownFor(outcome,state)
-            if CONFIG.learningEnabled and state.failures>=3 and not state.learned then
+            if CONFIG.learningEnabled and outcome.attempted==true and state.failures>=3 and not state.learned then
                 state.learned=true
                 safe("brain.noteFailure",brain.noteFailure,target)
             end
+        end
+        if outcome.reason=="stale-interaction" or outcome.reason=="activation-unavailable" then
+            requestScan(0.1,"interaction-stale")
         end
     end
 
@@ -629,7 +648,7 @@ local function status()
         bought=S.bought,
         collected=S.collected,
         rewardsActivated=S.rewardsActivated,
-        purchaseAttempts=S.purchaseAttempts,
+        purchaseAttempts=S.purchaseDispatches,
         purchaseFailures=S.purchaseFailures,
         deferredPurchases=S.deferredPurchases,
         blockedPurchases=S.blockedPurchases,
@@ -773,6 +792,9 @@ local function cleanup()
     if ENV.__VYRS_TYCOON_ACTIVE_TOKEN==TOKEN then ENV.__VYRS_TYCOON_ACTIVE_TOKEN=nil end
     if ENV.__VYRS_TYCOON_CLEANUP==cleanup then ENV.__VYRS_TYCOON_CLEANUP=nil end
     if ENV.__VYRS_TYCOON_DIAGNOSTICS==S then ENV.__VYRS_TYCOON_DIAGNOSTICS=nil end
+    if ENV.__VYRS_TYCOON_GET_CASH==getCash then ENV.__VYRS_TYCOON_GET_CASH=nil end
+    if ENV.__VYRS_TYCOON_CURRENCY_MARK==currency.mark then ENV.__VYRS_TYCOON_CURRENCY_MARK=nil end
+    if ENV.__VYRS_TYCOON_CURRENCY_STATUS==currency.status then ENV.__VYRS_TYCOON_CURRENCY_STATUS=nil end
     ENV.__VYRS_TYCOON_AUTONOMOUS=nil
 end
 
@@ -793,11 +815,11 @@ ENV.__VYRS_TYCOON_AUTONOMOUS={
     setBurst=function(v) CONFIG.burstMode=v==true saveSettings() return CONFIG.burstMode end,
 }
 
-local function worker(name,delay,fn)
+local function worker(name,delay,callback)
     task.spawn(function()
         while active() do
-            local ok,err=pcall(fn)
-            if not ok then warn("[0xVyrs Tycoon v4] "..name.." worker failed: "..tostring(err)) end
+            local ok,err=pcall(callback)
+            if not ok then warn("[0xVyrs Tycoon v4.1] "..name.." worker failed: "..tostring(err)) end
             task.wait(delay)
         end
     end)
@@ -815,8 +837,11 @@ end))
 worker("scan",0.10,function()
     if not CONFIG.enabled or S.scanBusy then return end
     local now=os.clock()
-    if S.scanRequested and now>=S.scanDueAt then scanNow()
-    elseif not S.scanRequested and now-S.lastScan>=CONFIG.scanInterval then requestScan(0,"periodic") end
+    if S.scanRequested and now>=S.scanDueAt then
+        scanNow()
+    elseif not S.scanRequested and now-S.lastScan>=CONFIG.scanInterval then
+        requestScan(0,"periodic")
+    end
 end)
 
 worker("buy",0.06,function()
@@ -849,7 +874,9 @@ worker("stats",0.22,function()
     if not CONFIG.enabled or os.clock()-S.lastStats<CONFIG.statsInterval then return end
     S.lastStats=os.clock()
     safe("stats.update",stats.update)
-    if CONFIG.learningEnabled and brain.observeEconomy then safe("brain.observeEconomy",brain.observeEconomy,getCash(),statsState()) end
+    if CONFIG.learningEnabled and brain.observeEconomy then
+        safe("brain.observeEconomy",brain.observeEconomy,getCash(),statsState())
+    end
     refreshBrain()
 end)
 
@@ -872,6 +899,7 @@ worker("completion",0.5,function()
                 if safe("autopilot.tryRebirth",autopilot.tryRebirth,S.data) then
                     safe("scanner.invalidateRoot",scanner.invalidateRoot)
                     if currency.invalidate then safe("currency.invalidate",currency.invalidate) end
+                    if stats.resetBaseline then safe("stats.resetBaseline",stats.resetBaseline) end
                     S.target=nil
                     S.targetSignature=nil
                     requestScan(0,"rebirth")
@@ -885,6 +913,7 @@ end)
 worker("health",2,function()
     if not CONFIG.enabled then return end
     normalise(S.data)
+    refreshTarget(false)
     local target=S.target and (S.target.name or (S.target.object and S.target.object.Name)) or "nil"
     local price=S.target and tostring(S.target.price) or "nil"
     local cash=S.data and tostring(S.data.cash) or "nil"
@@ -893,9 +922,9 @@ worker("health",2,function()
     local outcome=S.lastOutcome and (tostring(S.lastOutcome.status)..":"..tostring(S.lastOutcome.reason)) or "none"
     local evidence=S.lastOutcome and S.lastOutcome.evidence and tostring(S.lastOutcome.evidence) or "none"
     local scanMs=S.data and ((S.data.debug and tonumber(S.data.debug.scanTimeMs)) or tonumber(S.data.runtimeScanMs))
-    local line=string.format("[0xVyrs Tycoon v4] HEALTH // gate=%s phase=%s cash=%s buttons=%s affordable=%s target=%s price=%s attempts=%d outcome=%s evidence=%s scan=%s",
-        tostring(S.buyGate),tostring(S.targetPhase),cash,buttons,affordable,tostring(target),price,S.purchaseAttempts,outcome,evidence,scanMs and string.format("%.1fms",scanMs) or "--")
-    if line~=S.lastHealthLine then print(line) S.lastHealthLine=line end
+    print(string.format("[0xVyrs Tycoon v4.1] HEALTH // gate=%s phase=%s cash=%s buttons=%s affordable=%s target=%s price=%s dispatches=%d outcome=%s evidence=%s scan=%s",
+        tostring(S.buyGate),tostring(S.targetPhase),cash,buttons,affordable,tostring(target),price,S.purchaseDispatches,outcome,evidence,
+        scanMs and string.format("%.1fms",scanMs) or "--"))
 end)
 
 worker("autosave",15,function()
@@ -903,6 +932,6 @@ worker("autosave",15,function()
     if CONFIG.learningEnabled then safe("brain.save",brain.save) end
 end)
 
-print("[0xVyrs Tycoon v4] runtime="..RUNTIME_VERSION.." loaded")
-print("[0xVyrs Tycoon v4] modules // scanner="..MODULE_MANIFEST.scanner.." currency="..MODULE_MANIFEST.currency.." collector="..MODULE_MANIFEST.collector.." brain="..MODULE_MANIFEST.brain)
-print("[0xVyrs Tycoon v4] module origins // scanner="..tostring(moduleOrigins.scanner).." currency="..tostring(moduleOrigins.currency).." collector="..tostring(moduleOrigins.collector).." brain="..tostring(moduleOrigins.brain))
+print("[0xVyrs Tycoon v4.1] runtime="..RUNTIME_VERSION.." loaded")
+print("[0xVyrs Tycoon v4.1] modules // scanner="..MODULE_MANIFEST.scanner.." currency="..MODULE_MANIFEST.currency.." collector="..MODULE_MANIFEST.collector.." brain="..MODULE_MANIFEST.brain.." stats="..MODULE_MANIFEST.stats)
+print("[0xVyrs Tycoon v4.1] module origins // scanner="..tostring(moduleOrigins.scanner).." currency="..tostring(moduleOrigins.currency).." collector="..tostring(moduleOrigins.collector).." brain="..tostring(moduleOrigins.brain))
