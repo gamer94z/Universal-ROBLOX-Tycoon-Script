@@ -36,10 +36,10 @@ local CONFIG = {
 	buyMode = "Nearest",
 	collectMode = "Nearby",
 	collectRange = 90,
-	scanInterval = 10,
-	renderInterval = 1.2,
-	uiInterval = 0.65,
-	statsInterval = 1,
+	scanInterval = 8,
+	renderInterval = 1,
+	uiInterval = 0.5,
+	statsInterval = 0.9,
 	collectInterval = 0.5,
 	buyInterval = 0.5,
 	maxButtons = 80,
@@ -100,7 +100,9 @@ local function saveSettings()
 	payload.placeConfigs = payload.placeConfigs or {}
 	payload.placeConfigs[tostring(game.PlaceId)] = {}
 	for key, value in pairs(CONFIG) do
-		if key ~= "version" and key ~= "moduleBaseUrl" then payload.placeConfigs[tostring(game.PlaceId)][key] = value end
+		if key ~= "version" and key ~= "moduleBaseUrl" then
+			payload.placeConfigs[tostring(game.PlaceId)][key] = value
+		end
 	end
 	pcall(function() writefile(SETTINGS_FILE, HttpService:JSONEncode(payload)) end)
 end
@@ -110,55 +112,20 @@ local function getLocalRoot()
 	return character and character:FindFirstChild("HumanoidRootPart")
 end
 
-local CASH_HINTS = { "cash", "money", "coin", "balance", "credit", "fund", "currency", "gold" }
-local CASH_EXACT = { cash=true, money=true, coins=true, balance=true, credits=true, funds=true, currency=true, gold=true }
-local cashObjectCache
-local lastCashSearch = -math.huge
-
-local function cashNameScore(item)
-	if not item then return -math.huge end
-	local name = tostring(item.Name or ""):lower():gsub("[^%w]", "")
-	local score = CASH_EXACT[name] and 100 or 0
-	for _, hint in ipairs(CASH_HINTS) do if name:find(hint, 1, true) then score = math.max(score, 65) end end
-	if score == 0 then return -math.huge end
-	local parentName = item.Parent and tostring(item.Parent.Name or ""):lower() or ""
-	if parentName == "leaderstats" then score = score + 40 end
-	if parentName:find("data",1,true) or parentName:find("stat",1,true) or parentName:find("profile",1,true)
-		or parentName:find("wallet",1,true) or parentName:find("currency",1,true) then score = score + 18 end
-	return score
-end
-
 local function getCashObject()
-	if cashObjectCache and cashObjectCache.Parent and tonumber(cashObjectCache.Value) ~= nil then return cashObjectCache end
-	cashObjectCache = nil
-	local now = os.clock()
-	if now - lastCashSearch < 4 then return nil end
-	lastCashSearch = now
-
-	local best, bestScore
 	local leaderstats = LOCAL_PLAYER:FindFirstChild("leaderstats")
-	if leaderstats then
-		for _, item in ipairs(leaderstats:GetChildren()) do
-			if item:IsA("IntValue") or item:IsA("NumberValue") or item:IsA("StringValue") then
-				if tonumber(item.Value) ~= nil then
-					local score = cashNameScore(item)
-					if score > -math.huge and (not bestScore or score > bestScore) then best, bestScore = item, score end
-				end
-			end
+	if not leaderstats then return nil end
+	for _, exactName in ipairs({ "Cash", "Money", "Coins", "Balance" }) do
+		local item = leaderstats:FindFirstChild(exactName)
+		if item and tonumber(item.Value) then return item end
+	end
+	for _, item in ipairs(leaderstats:GetChildren()) do
+		local name = item.Name:lower()
+		if (name:find("cash", 1, true) or name:find("money", 1, true) or name:find("coin", 1, true)) and tonumber(item.Value) then
+			return item
 		end
 	end
-	if not best or (bestScore or 0) < 100 then
-		for _, item in ipairs(LOCAL_PLAYER:GetDescendants()) do
-			if item:IsA("IntValue") or item:IsA("NumberValue") or item:IsA("StringValue") then
-				if tonumber(item.Value) ~= nil then
-					local score = cashNameScore(item)
-					if score > -math.huge and (not bestScore or score > bestScore) then best, bestScore = item, score end
-				end
-			end
-		end
-	end
-	cashObjectCache = best
-	return best
+	return nil
 end
 
 local function getCash()
@@ -179,34 +146,27 @@ local context = {
 	getCash = getCash,
 }
 
-local function remoteModule(fileName)
-	if type(game.HttpGet) ~= "function" then return nil end
-	local ok, result = pcall(function()
-		return game:HttpGet(CONFIG.moduleBaseUrl:gsub("/+$", "") .. "/" .. fileName)
-	end)
-	return ok and type(result) == "string" and result ~= "" and result or nil
-end
-
-local function localModule(fileName)
-	if type(readfile) ~= "function" then return nil end
-	for _, path in ipairs({
-		"Tycoon/tycoon_modules/" .. fileName,
-		"Tycoon\\tycoon_modules\\" .. fileName,
-		"tycoon_modules/" .. fileName,
-		"tycoon_modules\\" .. fileName,
-	}) do
-		local ok, result = pcall(function() return readfile(path) end)
-		if ok and type(result) == "string" and result ~= "" then return result end
-	end
-	return nil
-end
-
 local function requireModule(name)
 	if type(loadstring) ~= "function" then return nil end
+	local source
 	local fileName = name .. ".lua"
-	local preferLocal = SHARED_ENV.__VYRS_TYCOON_USE_LOCAL_MODULES == true
-	local source = preferLocal and localModule(fileName) or remoteModule(fileName)
-	if not source then source = preferLocal and remoteModule(fileName) or localModule(fileName) end
+	if type(readfile) == "function" then
+		for _, path in ipairs({
+			"Tycoon/tycoon_modules/" .. fileName,
+			"Tycoon\\tycoon_modules\\" .. fileName,
+			"tycoon_modules/" .. fileName,
+			"tycoon_modules\\" .. fileName,
+		}) do
+			local ok, result = pcall(function() return readfile(path) end)
+			if ok and type(result) == "string" and result ~= "" then source = result break end
+		end
+	end
+	if not source and type(game.HttpGet) == "function" then
+		local ok, result = pcall(function()
+			return game:HttpGet(CONFIG.moduleBaseUrl:gsub("/+$", "") .. "/" .. fileName)
+		end)
+		if ok and type(result) == "string" and result ~= "" then source = result end
+	end
 	if not source then return nil end
 	local ok, result = pcall(function()
 		local chunk = loadstring(source)
@@ -263,16 +223,44 @@ if type(scanner) ~= "table" or type(collector) ~= "table" or type(upgrades) ~= "
 end
 
 local runtime = {
-	data=nil, nearest=nil, cheapest=nil, bestValue=nil, nextLocked=nil, plannedTarget=nil, planScore=nil, brainStatus=nil,
-	lastScan=-math.huge, lastRender=-math.huge, lastUi=-math.huge, lastStats=-math.huge, lastBuy=-math.huge,
-	lastCollect=-math.huge, lastRewardSweep=-math.huge, lastCashConnect=-math.huge,
-	bought=0, collected=0, rewardsActivated=0, purchaseAttempts=0, purchaseFailures=0, scanCount=0,
-	scanDirty=true, scanDirtyAt=0, buyBusy=false, collectBusy=false, rewardBusy=false, scanBusy=false, wasEnabled=false,
-	watchedRoot=nil, rootConnections={}, globalConnections={}, cashConnection=nil, cashObject=nil,
+	data = nil,
+	nearest = nil,
+	cheapest = nil,
+	bestValue = nil,
+	nextLocked = nil,
+	plannedTarget = nil,
+	planScore = nil,
+	brainStatus = nil,
+	lastScan = -math.huge,
+	lastRender = -math.huge,
+	lastUi = -math.huge,
+	lastStats = -math.huge,
+	lastBuy = -math.huge,
+	lastCollect = -math.huge,
+	lastRewardSweep = -math.huge,
+	lastCashConnect = -math.huge,
+	bought = 0,
+	collected = 0,
+	rewardsActivated = 0,
+	purchaseAttempts = 0,
+	purchaseFailures = 0,
+	scanCount = 0,
+	scanDirty = true,
+	scanDirtyAt = 0,
+	buyBusy = false,
+	collectBusy = false,
+	rewardBusy = false,
+	scanBusy = false,
+	wasEnabled = false,
+	watchedRoot = nil,
+	rootConnections = {},
+	globalConnections = {},
+	cashConnection = nil,
+	cashObject = nil,
 }
 
-local EVENT_SCAN_DEBOUNCE = 0.45
-local EVENT_SCAN_MIN_INTERVAL = 1.0
+local EVENT_SCAN_DEBOUNCE = 0.16
+local EVENT_SCAN_MIN_INTERVAL = 0.38
 local heartbeatConnection
 local cleanedUp = false
 
@@ -303,9 +291,10 @@ local function looksStructural(instance)
 	if not instance then return false end
 	if instance:IsA("TouchTransmitter") or instance:IsA("ProximityPrompt") or instance:IsA("ClickDetector") then return true end
 	local name = tostring(instance.Name or ""):lower()
-	return name:find("button",1,true) or name:find("purchase",1,true) or name:find("buy",1,true)
-		or name:find("price",1,true) or name:find("cost",1,true) or name:find("owner",1,true)
-		or name:find("drop",1,true) or name:find("collect",1,true)
+	return name:find("button", 1, true) or name:find("purchase", 1, true)
+		or name:find("buy", 1, true) or name:find("price", 1, true)
+		or name:find("cost", 1, true) or name:find("owner", 1, true)
+		or name:find("drop", 1, true) or name:find("collect", 1, true)
 end
 
 local function watchRoot(root)
@@ -346,13 +335,17 @@ local function updateCashState()
 				if button.affordable then affordable = affordable + 1 elseif button.locked then locked = locked + 1 end
 			end
 		end
+	end
 	runtime.data.affordableCount = affordable
 	runtime.data.lockedCount = locked
 end
 
 local function refreshBrainStatus()
-	if CONFIG.learningEnabled then runtime.brainStatus = safe("brain status", brain.getStatus, runtime.data, statsState())
-	else runtime.brainStatus = nil end
+	if CONFIG.learningEnabled then
+		runtime.brainStatus = safe("brain status", brain.getStatus, runtime.data, statsState())
+	else
+		runtime.brainStatus = nil
+	end
 	return runtime.brainStatus
 end
 
@@ -392,14 +385,10 @@ local function performScan(now)
 	local scanned = safe("scan", scanner.scan, context)
 	if scanned then
 		runtime.data = scanned
-		local mode = scanned.debug and scanned.debug.scanMode
-		local meaningful = mode ~= "cached-throttle"
-		if meaningful then
-			runtime.scanCount = runtime.scanCount + 1
-			watchRoot(scanned.root)
-			if CONFIG.learningEnabled then safe("brain observe", brain.observe, scanned, statsState()) end
-			safe("recovery", autopilot.updateRecovery, scanned)
-		end
+		runtime.scanCount = runtime.scanCount + 1
+		watchRoot(scanned.root)
+		if CONFIG.learningEnabled then safe("brain observe", brain.observe, scanned, statsState()) end
+		safe("recovery", autopilot.updateRecovery, scanned)
 	end
 	refreshTargets()
 	refreshBrainStatus()
@@ -487,14 +476,27 @@ end
 local function status()
 	local brainState = runtime.brainStatus or refreshBrainStatus()
 	return {
-		version=CONFIG.version, enabled=CONFIG.enabled, autopilotEnabled=CONFIG.autopilotEnabled,
-		learningEnabled=CONFIG.learningEnabled, burstMode=CONFIG.burstMode, autoRewards=CONFIG.autoRewards,
-		autoRebirth=CONFIG.autoRebirth, strategy=CONFIG.strategy, bought=runtime.bought, collected=runtime.collected,
-		rewardsActivated=runtime.rewardsActivated, purchaseAttempts=runtime.purchaseAttempts,
-		purchaseFailures=runtime.purchaseFailures, scanCount=runtime.scanCount,
-		root=runtime.data and runtime.data.rootName or nil, ownerVerified=runtime.data and runtime.data.ownerVerified or false,
-		buttons=runtime.data and runtime.data.totalButtons or 0, cash=runtime.data and runtime.data.cash or getCash(),
-		brain=brainState, autopilot=safe("autopilot status", autopilot.getStatus), boosts=safe("boost status", boosts.getStatus),
+		version = CONFIG.version,
+		enabled = CONFIG.enabled,
+		autopilotEnabled = CONFIG.autopilotEnabled,
+		learningEnabled = CONFIG.learningEnabled,
+		burstMode = CONFIG.burstMode,
+		autoRewards = CONFIG.autoRewards,
+		autoRebirth = CONFIG.autoRebirth,
+		strategy = CONFIG.strategy,
+		bought = runtime.bought,
+		collected = runtime.collected,
+		rewardsActivated = runtime.rewardsActivated,
+		purchaseAttempts = runtime.purchaseAttempts,
+		purchaseFailures = runtime.purchaseFailures,
+		scanCount = runtime.scanCount,
+		root = runtime.data and runtime.data.rootName or nil,
+		ownerVerified = runtime.data and runtime.data.ownerVerified or false,
+		buttons = runtime.data and runtime.data.totalButtons or 0,
+		cash = runtime.data and runtime.data.cash or getCash(),
+		brain = brainState,
+		autopilot = safe("autopilot status", autopilot.getStatus),
+		boosts = safe("boost status", boosts.getStatus),
 	}
 end
 
@@ -520,25 +522,24 @@ end
 SHARED_ENV.__VYRS_TYCOON_CLEANUP = cleanup
 SHARED_ENV.__VYRS_TYCOON_DIAGNOSTICS = runtime
 SHARED_ENV.__VYRS_TYCOON_AUTONOMOUS = {
-	start=start, stop=stop, setEnabled=setEnabled,
-	setAutopilot=function(v) CONFIG.autopilotEnabled=v==true refreshTargets() saveSettings() return CONFIG.autopilotEnabled end,
-	setAutoRebirth=function(v) CONFIG.autoRebirth=v==true saveSettings() return CONFIG.autoRebirth end,
-	setAutoRewards=function(v) CONFIG.autoRewards=v==true saveSettings() return CONFIG.autoRewards end,
-	setLearning=function(v) CONFIG.learningEnabled=v==true refreshTargets() saveSettings() return CONFIG.learningEnabled end,
-	setBurst=function(v) CONFIG.burstMode=v==true saveSettings() return CONFIG.burstMode end,
-	setStrategy=setStrategy, resetLearning=resetLearning, status=status, cleanup=cleanup,
+	start = start,
+	stop = stop,
+	setEnabled = setEnabled,
+	setAutopilot = function(v) CONFIG.autopilotEnabled = v == true refreshTargets() saveSettings() return CONFIG.autopilotEnabled end,
+	setAutoRebirth = function(v) CONFIG.autoRebirth = v == true saveSettings() return CONFIG.autoRebirth end,
+	setAutoRewards = function(v) CONFIG.autoRewards = v == true saveSettings() return CONFIG.autoRewards end,
+	setLearning = function(v) CONFIG.learningEnabled = v == true refreshTargets() saveSettings() return CONFIG.learningEnabled end,
+	setBurst = function(v) CONFIG.burstMode = v == true saveSettings() return CONFIG.burstMode end,
+	setStrategy = setStrategy,
+	resetLearning = resetLearning,
+	status = status,
+	cleanup = cleanup,
 }
 
 table.insert(runtime.globalConnections, LOCAL_PLAYER.CharacterAdded:Connect(function()
 	if scanner.invalidateRoot then safe("character invalidate", scanner.invalidateRoot) end
 	markScanDirty(true)
 	connectCashWatch()
-end))
-
-table.insert(runtime.globalConnections, LOCAL_PLAYER.DescendantAdded:Connect(function(instance)
-	if instance:IsA("IntValue") or instance:IsA("NumberValue") or instance:IsA("StringValue") then
-		if cashNameScore(instance) > -math.huge then lastCashSearch=-math.huge; if not runtime.cashObject then connectCashWatch() end end
-	end
 end))
 
 connectCashWatch()
@@ -548,7 +549,7 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 	if not active() then cleanup() return end
 	local now = os.clock()
 
-	if not runtime.cashConnection and now - runtime.lastCashConnect >= 4 then
+	if not runtime.cashConnection and now - runtime.lastCashConnect >= 2 then
 		runtime.lastCashConnect = now
 		connectCashWatch()
 	end
@@ -563,7 +564,9 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 	end
 
 	if CONFIG.enabled then
-		local eventDue = runtime.scanDirty and now - runtime.scanDirtyAt >= EVENT_SCAN_DEBOUNCE and now - runtime.lastScan >= EVENT_SCAN_MIN_INTERVAL
+		local eventDue = runtime.scanDirty
+			and now - runtime.scanDirtyAt >= EVENT_SCAN_DEBOUNCE
+			and now - runtime.lastScan >= EVENT_SCAN_MIN_INTERVAL
 		local periodicDue = now - runtime.lastScan >= CONFIG.scanInterval
 		if eventDue or periodicDue then performScan(now) end
 	end
@@ -584,7 +587,7 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 			end
 		end
 
-		if CONFIG.autoRewards and not runtime.rewardBusy and now - runtime.lastRewardSweep >= 5 then
+		if CONFIG.autoRewards and not runtime.rewardBusy and now - runtime.lastRewardSweep >= 2.5 then
 			runtime.lastRewardSweep = now
 			runtime.rewardBusy = true
 			local activated = safe("free rewards", boosts.sweep, runtime.data) or 0
@@ -595,17 +598,26 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		if now - runtime.lastRender >= CONFIG.renderInterval then
 			runtime.lastRender = now
 			refreshTargets()
-			if CONFIG.highlightAffordable then safe("highlight", upgrades.render, runtime.data, runtime.plannedTarget or runtime.nearest)
-			else safe("highlight clear", upgrades.clear) end
+			if CONFIG.highlightAffordable then
+				safe("highlight", upgrades.render, runtime.data, runtime.plannedTarget or runtime.nearest)
+			else
+				safe("highlight clear", upgrades.clear)
+			end
 			safe("labels", upgrades.renderLabels, runtime.data, runtime.plannedTarget or runtime.nearest)
-			if CONFIG.showWaypoint then safe("waypoint", upgrades.updateWaypoint, runtime.plannedTarget or runtime.nearest or runtime.cheapest)
-			else safe("waypoint hide", upgrades.hideWaypoint) end
+			if CONFIG.showWaypoint then
+				safe("waypoint", upgrades.updateWaypoint, runtime.plannedTarget or runtime.nearest or runtime.cheapest)
+			else
+				safe("waypoint hide", upgrades.hideWaypoint)
+			end
 		end
 
 		local brainState = runtime.brainStatus
 		local buyInterval = CONFIG.buyInterval
-		if CONFIG.autopilotEnabled and CONFIG.burstMode then buyInterval = safe("buy interval", autopilot.getBuyInterval, runtime.data, brainState) or buyInterval end
-		if CONFIG.autoBuy and runtime.data.automationAllowed and not complete and not runtime.buyBusy and now - runtime.lastBuy >= buyInterval then
+		if CONFIG.autopilotEnabled and CONFIG.burstMode then
+			buyInterval = safe("buy interval", autopilot.getBuyInterval, runtime.data, brainState) or buyInterval
+		end
+		if CONFIG.autoBuy and runtime.data.automationAllowed and not complete
+			and not runtime.buyBusy and now - runtime.lastBuy >= buyInterval then
 			runtime.lastBuy = now
 			runtime.buyBusy = true
 			refreshTargets()
@@ -627,8 +639,11 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		end
 
 		local collectInterval = CONFIG.collectInterval
-		if CONFIG.autopilotEnabled then collectInterval = safe("collect interval", autopilot.getCollectInterval, runtime.data, brainState) or collectInterval end
-		if CONFIG.autoCollect and runtime.data.automationAllowed and not runtime.collectBusy and now - runtime.lastCollect >= collectInterval then
+		if CONFIG.autopilotEnabled then
+			collectInterval = safe("collect interval", autopilot.getCollectInterval, runtime.data, brainState) or collectInterval
+		end
+		if CONFIG.autoCollect and runtime.data.automationAllowed and not runtime.collectBusy
+			and now - runtime.lastCollect >= collectInterval then
 			runtime.lastCollect = now
 			runtime.collectBusy = true
 			runtime.collected = runtime.collected + (safe("collect", collector.collectNearby, context, runtime.data) or 0)
@@ -645,9 +660,15 @@ heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		runtime.lastUi = now
 		refreshBrainStatus()
 		safe("ui update", ui.update, {
-			data=runtime.data, nearest=runtime.plannedTarget or runtime.nearest, cheapest=runtime.cheapest,
-			bestValue=runtime.bestValue, nextLocked=runtime.nextLocked, stats=statsState(), collected=runtime.collected,
-			bought=runtime.bought, autonomous=status(),
+			data = runtime.data,
+			nearest = runtime.plannedTarget or runtime.nearest,
+			cheapest = runtime.cheapest,
+			bestValue = runtime.bestValue,
+			nextLocked = runtime.nextLocked,
+			stats = statsState(),
+			collected = runtime.collected,
+			bought = runtime.bought,
+			autonomous = status(),
 		})
 	end
 end)
@@ -655,8 +676,11 @@ end)
 local spawn = task and task.spawn or coroutine.wrap
 spawn(function()
 	while active() do
-		if task and task.wait then task.wait(20) else wait(20) end
-		if active() then saveSettings(); if CONFIG.learningEnabled then safe("brain autosave", brain.save) end end
+		if task and task.wait then task.wait(15) else wait(15) end
+		if active() then
+			saveSettings()
+			if CONFIG.learningEnabled then safe("brain autosave", brain.save) end
+		end
 	end
 end)
 
