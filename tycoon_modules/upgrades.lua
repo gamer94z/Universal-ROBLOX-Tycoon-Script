@@ -4,25 +4,18 @@ return function(context)
 	local labels = {}
 	local waypointGui
 
+	-- Same visual language as 0xVyrs ESP Console.exe.
 	local THEME = {
-		panel = Color3.fromRGB(11, 13, 17),
-		surface = Color3.fromRGB(17, 21, 27),
-		border = Color3.fromRGB(52, 62, 76),
-		text = Color3.fromRGB(241, 244, 248),
-		muted = Color3.fromRGB(137, 148, 163),
-		accent = Color3.fromRGB(77, 163, 255),
-		accentDim = Color3.fromRGB(43, 94, 145),
-		success = Color3.fromRGB(102, 214, 158),
-		warning = Color3.fromRGB(228, 183, 91),
-		danger = Color3.fromRGB(224, 108, 117),
+		panel = Color3.fromRGB(2, 3, 3),
+		surface = Color3.fromRGB(8, 10, 10),
+		border = Color3.fromRGB(74, 74, 74),
+		text = Color3.fromRGB(229, 232, 230),
+		muted = Color3.fromRGB(132, 140, 137),
+		accent = Color3.fromRGB(91, 221, 137),
+		cyan = Color3.fromRGB(89, 198, 226),
+		warning = Color3.fromRGB(238, 193, 84),
+		danger = Color3.fromRGB(238, 103, 103),
 	}
-
-	local function corner(parent, radius)
-		local item = Instance.new("UICorner")
-		item.CornerRadius = UDim.new(0, radius or 4)
-		item.Parent = parent
-		return item
-	end
 
 	local function stroke(parent, colour, transparency)
 		local item = Instance.new("UIStroke")
@@ -34,15 +27,15 @@ return function(context)
 		return item
 	end
 
-	local function makeText(parent, name, text, size, colour, font, alignment)
+	local function makeText(parent, name, text, size, colour, alignment)
 		local item = Instance.new("TextLabel")
 		item.Name = name
 		item.BackgroundTransparency = 1
 		item.BorderSizePixel = 0
-		item.Font = font or Enum.Font.GothamMedium
+		item.Font = Enum.Font.Code
 		item.Text = text or ""
 		item.TextColor3 = colour or THEME.text
-		item.TextSize = size or 9
+		item.TextSize = size or 10
 		item.TextXAlignment = alignment or Enum.TextXAlignment.Left
 		item.TextYAlignment = Enum.TextYAlignment.Center
 		item.TextTruncate = Enum.TextTruncate.AtEnd
@@ -184,9 +177,9 @@ return function(context)
 				end
 				local isTarget = target and target.object == object
 				highlight.FillColor = THEME.accent
-				highlight.OutlineColor = isTarget and THEME.text or THEME.accent
-				highlight.FillTransparency = isTarget and 0.76 or 1
-				highlight.OutlineTransparency = isTarget and 0.04 or 0.42
+				highlight.OutlineColor = isTarget and THEME.cyan or THEME.accent
+				highlight.FillTransparency = isTarget and 0.84 or 1
+				highlight.OutlineTransparency = isTarget and 0.04 or 0.48
 			end
 		end
 		for object, highlight in pairs(highlights) do
@@ -199,46 +192,33 @@ return function(context)
 		gui.Name = "VyrsPurchaseHUD"
 		gui.AlwaysOnTop = true
 		gui.MaxDistance = 260
-		gui.Size = UDim2.new(0, 164, 0, 42)
+		gui.Size = UDim2.new(0, 176, 0, 40)
 		gui.StudsOffset = Vector3.new(0, 3.1, 0)
 
 		local panel = Instance.new("Frame")
 		panel.Name = "Panel"
 		panel.BackgroundColor3 = THEME.panel
-		panel.BackgroundTransparency = 0.06
-		panel.BorderSizePixel = 0
+		panel.BackgroundTransparency = 0.03
+		panel.BorderColor3 = THEME.border
+		panel.BorderSizePixel = 1
 		panel.Size = UDim2.new(1, 0, 1, 0)
 		panel.Parent = gui
-		corner(panel, 4)
-		stroke(panel, THEME.border, 0.22)
 
-		local rail = Instance.new("Frame")
-		rail.Name = "Rail"
-		rail.BackgroundColor3 = THEME.accent
-		rail.BorderSizePixel = 0
-		rail.Size = UDim2.new(0, 2, 1, 0)
-		rail.Parent = panel
+		local prompt = makeText(panel, "Prompt", ">", 11, THEME.accent)
+		prompt.Position = UDim2.new(0, 7, 0, 2)
+		prompt.Size = UDim2.new(0, 12, 0, 17)
 
-		local dot = Instance.new("Frame")
-		dot.Name = "StateDot"
-		dot.BackgroundColor3 = THEME.accent
-		dot.BorderSizePixel = 0
-		dot.Position = UDim2.new(0, 10, 0, 9)
-		dot.Size = UDim2.new(0, 5, 0, 5)
-		dot.Parent = panel
-		corner(dot, 99)
+		local title = makeText(panel, "Title", cleanName(button.name), 9, THEME.muted)
+		title.Position = UDim2.new(0, 20, 0, 2)
+		title.Size = UDim2.new(1, -26, 0, 17)
 
-		local title = makeText(panel, "Title", cleanName(button.name), 8, THEME.muted, Enum.Font.GothamBold)
-		title.Position = UDim2.new(0, 21, 0, 3)
-		title.Size = UDim2.new(1, -28, 0, 17)
+		local price = makeText(panel, "Price", "$" .. formatNumber(button.price), 11, THEME.text)
+		price.Position = UDim2.new(0, 8, 0, 20)
+		price.Size = UDim2.new(0.55, -8, 0, 16)
 
-		local price = makeText(panel, "Price", "$" .. formatNumber(button.price), 11, THEME.text, Enum.Font.GothamBold)
-		price.Position = UDim2.new(0, 10, 0, 20)
-		price.Size = UDim2.new(0.58, -10, 0, 18)
-
-		local state = makeText(panel, "State", button.affordable and "READY" or "LOCKED", 7, button.affordable and THEME.success or THEME.warning, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
-		state.Position = UDim2.new(0.58, 0, 0, 20)
-		state.Size = UDim2.new(0.42, -9, 0, 18)
+		local state = makeText(panel, "State", button.affordable and "[ READY ]" or "[ LOCKED ]", 9, button.affordable and THEME.accent or THEME.warning, Enum.TextXAlignment.Right)
+		state.Position = UDim2.new(0.55, 0, 0, 20)
+		state.Size = UDim2.new(0.45, -7, 0, 16)
 
 		gui.Adornee = button.part
 		gui.Parent = button.part
@@ -256,14 +236,12 @@ return function(context)
 		local title = panel:FindFirstChild("Title")
 		local price = panel:FindFirstChild("Price")
 		local state = panel:FindFirstChild("State")
-		local dot = panel:FindFirstChild("StateDot")
 		if title then title.Text = cleanName(button.name) end
 		if price then price.Text = "$" .. formatNumber(button.price) end
 		if state then
-			state.Text = button.affordable and "READY" or "LOCKED"
-			state.TextColor3 = button.affordable and THEME.success or THEME.warning
+			state.Text = button.affordable and "[ READY ]" or "[ LOCKED ]"
+			state.TextColor3 = button.affordable and THEME.accent or THEME.warning
 		end
-		if dot then dot.BackgroundColor3 = button.affordable and THEME.accent or THEME.warning end
 	end
 
 	local function renderLabels(data, target)
@@ -297,48 +275,45 @@ return function(context)
 		gui.Name = "VyrsCurrentTargetHUD"
 		gui.AlwaysOnTop = true
 		gui.MaxDistance = 600
-		gui.Size = UDim2.new(0, 220, 0, 70)
-		gui.StudsOffset = Vector3.new(0, 4.4, 0)
+		gui.Size = UDim2.new(0, 238, 0, 68)
+		gui.StudsOffset = Vector3.new(0, 4.35, 0)
 
 		local panel = Instance.new("Frame")
 		panel.Name = "Panel"
 		panel.BackgroundColor3 = THEME.panel
-		panel.BackgroundTransparency = 0.02
-		panel.BorderSizePixel = 0
-		panel.Size = UDim2.new(1, 0, 0, 60)
+		panel.BackgroundTransparency = 0.01
+		panel.BorderColor3 = THEME.accent
+		panel.BorderSizePixel = 1
+		panel.Size = UDim2.new(1, 0, 0, 58)
 		panel.Parent = gui
-		corner(panel, 5)
-		stroke(panel, THEME.accent, 0.12)
 
-		local topRail = Instance.new("Frame")
-		topRail.BackgroundColor3 = THEME.accent
-		topRail.BorderSizePixel = 0
-		topRail.Size = UDim2.new(1, 0, 0, 2)
-		topRail.Parent = panel
+		local prompt = makeText(panel, "Prompt", ">_", 11, THEME.accent)
+		prompt.Position = UDim2.new(0, 8, 0, 4)
+		prompt.Size = UDim2.new(0, 24, 0, 15)
 
-		local kicker = makeText(panel, "Kicker", "CURRENT TARGET", 7, THEME.accent, Enum.Font.GothamBold)
-		kicker.Position = UDim2.new(0, 10, 0, 5)
-		kicker.Size = UDim2.new(1, -20, 0, 13)
+		local kicker = makeText(panel, "Kicker", "CURRENT TARGET", 9, THEME.cyan)
+		kicker.Position = UDim2.new(0, 35, 0, 4)
+		kicker.Size = UDim2.new(1, -43, 0, 15)
 
-		local title = makeText(panel, "Title", "UPGRADE", 11, THEME.text, Enum.Font.GothamBold)
-		title.Position = UDim2.new(0, 10, 0, 19)
-		title.Size = UDim2.new(1, -104, 0, 18)
+		local title = makeText(panel, "Title", "UPGRADE", 11, THEME.text)
+		title.Position = UDim2.new(0, 8, 0, 20)
+		title.Size = UDim2.new(1, -105, 0, 17)
 
-		local price = makeText(panel, "Price", "$0", 11, THEME.text, Enum.Font.GothamBold, Enum.TextXAlignment.Right)
+		local price = makeText(panel, "Price", "$0", 11, THEME.text, Enum.TextXAlignment.Right)
 		price.AnchorPoint = Vector2.new(1, 0)
-		price.Position = UDim2.new(1, -10, 0, 19)
-		price.Size = UDim2.new(0, 84, 0, 18)
+		price.Position = UDim2.new(1, -8, 0, 20)
+		price.Size = UDim2.new(0, 90, 0, 17)
 
-		local detail = makeText(panel, "Detail", "READY", 7, THEME.success, Enum.Font.GothamBold)
-		detail.Position = UDim2.new(0, 10, 0, 40)
-		detail.Size = UDim2.new(1, -20, 0, 13)
+		local detail = makeText(panel, "Detail", "[ READY ]", 9, THEME.accent)
+		detail.Position = UDim2.new(0, 8, 0, 39)
+		detail.Size = UDim2.new(1, -16, 0, 14)
 
 		local stem = Instance.new("Frame")
 		stem.Name = "Stem"
 		stem.BackgroundColor3 = THEME.accent
 		stem.BorderSizePixel = 0
-		stem.Position = UDim2.new(0.5, -1, 0, 60)
-		stem.Size = UDim2.new(0, 2, 0, 7)
+		stem.Position = UDim2.new(0.5, 0, 0, 58)
+		stem.Size = UDim2.new(0, 1, 0, 8)
 		stem.Parent = gui
 
 		local point = Instance.new("Frame")
@@ -346,17 +321,13 @@ return function(context)
 		point.AnchorPoint = Vector2.new(0.5, 0)
 		point.BackgroundColor3 = THEME.accent
 		point.BorderSizePixel = 0
-		point.Position = UDim2.new(0.5, 0, 0, 66)
-		point.Size = UDim2.new(0, 5, 0, 5)
+		point.Position = UDim2.new(0.5, 0, 0, 65)
+		point.Size = UDim2.new(0, 5, 0, 3)
 		point.Parent = gui
-		corner(point, 99)
 		return gui
 	end
 
 	local function updateWaypoint(entry)
-		-- A target marker should represent something actionable. If cash dropped
-		-- below the price after another purchase, hide it until the planner has an
-		-- affordable target again instead of visually jumping to a locked button.
 		if not entry or entry.affordable ~= true or entry.paidPurchase
 			or not entry.part or not entry.part.Parent then
 			hideWaypoint()
@@ -377,8 +348,8 @@ return function(context)
 		if detail then
 			local root = context and context.getLocalRoot and context.getLocalRoot()
 			local distance = root and entry.part and math.floor((entry.part.Position - root.Position).Magnitude + 0.5) or nil
-			detail.Text = distance and string.format("READY  //  %d studs", distance) or "READY"
-			detail.TextColor3 = THEME.success
+			detail.Text = distance and string.format("[ READY ]  //  %d STUDS", distance) or "[ READY ]"
+			detail.TextColor3 = THEME.accent
 		end
 	end
 
