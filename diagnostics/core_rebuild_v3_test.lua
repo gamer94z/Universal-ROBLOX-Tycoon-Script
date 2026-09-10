@@ -3,7 +3,7 @@
 
 local env=(type(getgenv)=="function" and getgenv()) or (type(getfenv)=="function" and getfenv(0)) or _G
 local repo="https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/"
-local BUILD="60fb92450c7f35fbb3f330c59a8d722f65213b6c"
+local BUILD="7518b64d5319dc09486aa89996677f802e099e41"
 
 env.__VYRS_TYCOON_USE_LOCAL_MODULES=false
 env.__VYRS_TYCOON_MODULE_BASE_URL=repo..BUILD.."/tycoon_modules"
@@ -15,5 +15,5 @@ if type(chunk)~="function" then
     return
 end
 
-print("[0xVyrs Tycoon Core v3 Test] audited scanner // strict currency // structured outcomes // single state owner")
+print("[0xVyrs Tycoon Core v3 Test] audited scanner // strict currency // collector v4 paid guard // structured outcomes")
 return chunk()
