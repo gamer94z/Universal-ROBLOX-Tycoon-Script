@@ -29,7 +29,7 @@ env.__VYRS_TYCOON_USE_LOCAL_MODULES=false
 local source=game:HttpGet(repo..STABLE_RUNTIME.."/autonomous.lua")
 local function patch(pattern,replacement,expected)
     local count
-    source,count=source:gsub(pattern,replacement)
+    source,count=source:gsub(pattern,function() return replacement end)
     if expected and count~=expected then
         warn("[0xVyrs Tycoon Test] patch mismatch: expected "..expected..", got "..count)
         return false
