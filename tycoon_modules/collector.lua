@@ -5,6 +5,7 @@ return function(context)
     local CONFIG=context.CONFIG or {}
     local actorIndexes=setmetatable({}, {__mode="k"})
     local collectCooldowns=setmetatable({}, {__mode="k"})
+    local collectActorStates=setmetatable({}, {__mode="k"})
     local noclipStates=setmetatable({}, {__mode="k"})
     local collectCursor=1
 
@@ -21,6 +22,7 @@ return function(context)
     local diagnostics={
         moduleVersion="4.2",
         collectAttempts=0,collectActivations=0,collectCashConfirmed=0,collectFailures=0,
+        collectActorRetries=0,collectActorSwitches=0,lastCollectActor=nil,preferredCollectActor=nil,
         purchaseDispatches=0,purchaseSuccesses=0,purchaseFailures=0,purchaseDeferred=0,purchaseBlocked=0,
         physicalApproaches=0,approachSuccesses=0,approachDeferred=0,approachFailures=0,
         lateConfirmations=0,launchGuards=0,noclipApplied=0,
@@ -464,25 +466,69 @@ return function(context)
         return result("failed",diagnostics.lastPurchaseReason,fired==true)
     end
 
-    local function collectActor(root)
-        local list=actorList(root,COLLECT_ACTORS)
-        return list[1] or root
-    end
-    local function collectorTouch(root,target)
-        if not root or not target then return false end
+    local function collectorTouch(root,target,key)
+        if not root or not target then return false,nil,nil,nil end
         setCollectorNoClip(target)
+        local actors=actorList(root,COLLECT_ACTORS)
+        if #actors==0 then return false,nil,nil,actors end
+
+        local state=collectActorStates[key]
+        if not state then
+            state={index=1,preferred=nil}
+            collectActorStates[key]=state
+        end
+
+        local actor=nil
+        if state.preferred and state.preferred.Parent then
+            for _,candidate in ipairs(actors) do
+                if candidate==state.preferred then actor=candidate break end
+            end
+        end
+        if not actor then
+            if state.index<1 or state.index>#actors then state.index=1 end
+            actor=actors[state.index]
+        end
+
+        diagnostics.lastCollectActor=actor and actor.Name or nil
+        diagnostics.preferredCollectActor=state.preferred and state.preferred.Parent and state.preferred.Name or nil
+
         local beforeCFrame=root.CFrame
         local beforeLinear=root.AssemblyLinearVelocity
         local beforeAngular=root.AssemblyAngularVelocity
-        local actor=collectActor(root)
         local ok=fireTouch(actor,target)
         guardCharacter(root,beforeCFrame,beforeLinear,beforeAngular)
         if task and task.delay then
             task.delay(0.08,function() guardCharacter(root,beforeCFrame,beforeLinear,beforeAngular) end)
             task.delay(0.2,function() guardCharacter(root,beforeCFrame,beforeLinear,beforeAngular) end)
         end
-        return ok
+        return ok,actor,state,actors
     end
+
+    local function advanceCollectActor(state,actors,actor)
+        if not state or not actors or #actors==0 then return end
+        local index=state.index or 1
+        for i,candidate in ipairs(actors) do
+            if candidate==actor then index=i break end
+        end
+        local nextIndex=(index%#actors)+1
+        if state.preferred~=nil or nextIndex~=index then diagnostics.collectActorSwitches=diagnostics.collectActorSwitches+1 end
+        state.preferred=nil
+        state.index=nextIndex
+        diagnostics.collectActorRetries=diagnostics.collectActorRetries+1
+        diagnostics.preferredCollectActor=nil
+    end
+
+    local function confirmCollection(before)
+        if before==nil then return nil,tonumber(context.getCash()) end
+        local deadline=os.clock()+0.34
+        local after=tonumber(context.getCash())
+        while after~=nil and after<=before and os.clock()<deadline do
+            waitStep(0.05)
+            after=tonumber(context.getCash())
+        end
+        return after~=nil and after>before,after
+    end
+
     local function collectNearby(_,data)
         if not data or data.automationAllowed~=true or not data.drops or #data.drops==0 then return 0 end
         local root=context.getLocalRoot()
@@ -503,18 +549,46 @@ return function(context)
                     local before=tonumber(context.getCash())
                     markCurrency("collect")
                     local ok=false
-                    if drop.prompt and drop.prompt.Parent then ok=firePrompt(drop.prompt)
-                    elseif drop.clickDetector and drop.clickDetector.Parent then ok=fireClick(drop.clickDetector)
-                    elseif drop.touchPart and drop.touchPart.Parent then ok=collectorTouch(root,drop.touchPart) end
+                    local actor,state,actors=nil,nil,nil
+                    if drop.prompt and drop.prompt.Parent then
+                        ok=firePrompt(drop.prompt)
+                    elseif drop.clickDetector and drop.clickDetector.Parent then
+                        ok=fireClick(drop.clickDetector)
+                    elseif drop.touchPart and drop.touchPart.Parent then
+                        ok,actor,state,actors=collectorTouch(root,drop.touchPart,key)
+                    end
                     collectCooldowns[key]=now+COLLECT_COOLDOWN
+
                     if ok then
                         diagnostics.collectActivations=diagnostics.collectActivations+1
-                        waitStep(0.16)
-                        local after=tonumber(context.getCash())
-                        if before and after and after>before then diagnostics.collectCashConfirmed=diagnostics.collectCashConfirmed+1 end
+                        local confirmed=confirmCollection(before)
+                        if confirmed==true then
+                            diagnostics.collectCashConfirmed=diagnostics.collectCashConfirmed+1
+                            if state and actor then
+                                state.preferred=actor
+                                for i,candidate in ipairs(actors or {}) do if candidate==actor then state.index=i break end end
+                                diagnostics.preferredCollectActor=actor.Name
+                            end
+                            collectCursor=index
+                            return 1
+                        end
+
+                        -- If cash is readable and did not increase, rotate to another
+                        -- character part on the next attempt instead of getting stuck.
+                        if confirmed==false and state and actor then
+                            advanceCollectActor(state,actors,actor)
+                            diagnostics.collectFailures=diagnostics.collectFailures+1
+                            collectCursor=index
+                            return 0
+                        end
+
+                        -- Currency can occasionally be unresolved for a frame. In that
+                        -- case do not punish or rotate a potentially working actor.
                         collectCursor=index
                         return 1
                     end
+
+                    if state and actor then advanceCollectActor(state,actors,actor) end
                     diagnostics.collectFailures=diagnostics.collectFailures+1
                     collectCursor=index
                     return 0
@@ -530,6 +604,7 @@ return function(context)
             if part and part.Parent and state then pcall(function() part.CanCollide=state.original end) end
             noclipStates[part]=nil
         end
+        for key in pairs(collectActorStates) do collectActorStates[key]=nil end
     end
     local function getStatus()
         local copy={}
