@@ -12,8 +12,9 @@ return function(context)
     local COLLECT_COOLDOWN=0.85
     local FAILED_COOLDOWN=1.2
     local CONFIRM_DELAY=0.28
-    local PURCHASE_CONFIRM_TIMEOUT=1.35
+    local PURCHASE_CONFIRM_TIMEOUT=1.6
     local MAX_BLOCK_INSPECT=28
+    local SIGNATURE_INSPECT=48
     local BLOCKED={"watch ad","watch video","video ad","rewarded ad","rewarded video","advertisement","developer product","game pass","gamepass","premium","robux","r$","rbx"}
     local PURCHASE_ACTOR_NAMES={"HumanoidRootPart","LeftFoot","RightFoot","LeftLowerLeg","RightLowerLeg","Left Leg","Right Leg","LowerTorso","Torso","Head"}
 
@@ -106,7 +107,7 @@ return function(context)
         if not actor or not actor.Parent or not target or not target.Parent or type(firetouchinterest)~="function" then return false end
         return pcall(function()
             firetouchinterest(actor,target,0)
-            waitStep(0.018)
+            waitStep(0.045)
             firetouchinterest(actor,target,1)
         end)
     end
@@ -203,9 +204,44 @@ return function(context)
         end
         return false
     end
+
+    local function purchaseSignature(button)
+        local origin=button and (button.object or button.touchPart)
+        if not origin or not origin.Parent then return nil end
+        local pieces={}
+        local queue={origin}
+        local cursor=1
+        local inspected=0
+        while cursor<=#queue and inspected<SIGNATURE_INSPECT do
+            local current=queue[cursor]
+            cursor=cursor+1
+            inspected=inspected+1
+            if current:IsA("TextLabel") or current:IsA("TextButton") or current:IsA("TextBox") then
+                table.insert(pieces,current.Name.."="..tostring(current.Text))
+            elseif current:IsA("IntValue") or current:IsA("NumberValue") or current:IsA("StringValue") then
+                table.insert(pieces,current.Name.."="..tostring(current.Value))
+            elseif current:IsA("ProximityPrompt") then
+                table.insert(pieces,current.Name.."="..tostring(current.ActionText).."|"..tostring(current.ObjectText))
+            end
+            for _,child in ipairs(current:GetChildren()) do
+                if inspected+#queue<SIGNATURE_INSPECT*2 then table.insert(queue,child) end
+            end
+        end
+        if #pieces==0 then return nil end
+        table.sort(pieces)
+        return table.concat(pieces,"\31")
+    end
+
     local function capturePurchase(scanContext,button)
         local object=button and button.object
-        return {object=object,parent=object and object.Parent or nil,cash=tonumber(scanContext.getCash()),price=tonumber(button and button.price) or 0,hadActivation=activationAlive(button) and true or false}
+        return {
+            object=object,
+            parent=object and object.Parent or nil,
+            cash=tonumber(scanContext.getCash()),
+            price=tonumber(button and button.price) or 0,
+            hadActivation=activationAlive(button) and true or false,
+            signature=purchaseSignature(button),
+        }
     end
     local function purchaseApplied(scanContext,button,before)
         local object=before.object
@@ -213,6 +249,10 @@ return function(context)
         if hasPurchasedAncestor(object) then return true end
         if before.parent and object.Parent~=before.parent then return true end
         if before.hadActivation and not activationAlive(button) then return true end
+        if before.signature then
+            local currentSignature=purchaseSignature(button)
+            if currentSignature and currentSignature~=before.signature then return true end
+        end
         local current=tonumber(scanContext.getCash())
         return before.cash and current and before.price>0 and current<before.cash or false
     end
@@ -229,7 +269,6 @@ return function(context)
         local failures=(purchaseFailures[button.object] or 0)+1
         purchaseFailures[button.object]=failures
         button.failureCount=failures
-        -- Keep compatibility retries responsive while avoiding a hot failure loop.
         button.blockedUntil=os.clock()+math.min(5,0.65+failures*0.55)
     end
 
