@@ -6,7 +6,7 @@ local env = (type(getgenv) == "function" and getgenv())
 	or _G
 
 local STABLE_RUNTIME_COMMIT = "8c2e708a6faf50bc3bc7e7f038df2585d95ddc49"
-local HARDENING_MODULE_COMMIT = "87237a049e9cb6804265bda54d04c9d7605a1d0b"
+local HARDENING_MODULE_COMMIT = "9a385eb6b9a30e80a28f26a2f7281cd571a6cf64"
 local repoBase = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/"
 
 env.__VYRS_TYCOON_MODULE_BASE_URL = repoBase .. HARDENING_MODULE_COMMIT .. "/tycoon_modules"
@@ -20,5 +20,5 @@ if type(chunk) ~= "function" then
 	return
 end
 
-print("[0xVyrs Tycoon Test] stable runtime compiled // GUI-aware hardening modules pinned")
+print("[0xVyrs Tycoon Test] stable runtime compiled // adaptive HUD hardening modules pinned")
 return chunk()
