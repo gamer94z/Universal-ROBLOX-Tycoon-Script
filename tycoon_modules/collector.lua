@@ -1,8 +1,10 @@
 -- 0xVyrs universal tycoon interaction worker.
--- Standalone hardening build: low-rate collection, no limb rotation, no nested downloads.
+-- Standalone hardening build: low-rate collection, no nested downloads.
+-- Purchase touches rotate through safe character actors when a game ignores HRP touches.
 
 return function(context)
     local purchaseFailures=setmetatable({}, {__mode="k"})
+    local purchaseActorIndexes=setmetatable({}, {__mode="k"})
     local collectCooldowns=setmetatable({}, {__mode="k"})
     local noclipStates=setmetatable({}, {__mode="k"})
     local collectCursor=1
@@ -10,10 +12,18 @@ return function(context)
     local COLLECT_COOLDOWN=0.85
     local FAILED_COOLDOWN=1.2
     local CONFIRM_DELAY=0.28
+    local PURCHASE_CONFIRM_TIMEOUT=1.35
     local MAX_BLOCK_INSPECT=28
     local BLOCKED={"watch ad","watch video","video ad","rewarded ad","rewarded video","advertisement","developer product","game pass","gamepass","premium","robux","r$","rbx"}
+    local PURCHASE_ACTOR_NAMES={"HumanoidRootPart","LeftFoot","RightFoot","LeftLowerLeg","RightLowerLeg","Left Leg","Right Leg","LowerTorso","Torso","Head"}
 
-    local diagnostics={attempts=0,activations=0,cashConfirmed=0,failed=0,unaffordableSkips=0,verificationMisses=0,noclipApplied=0,launchGuards=0,staleRefreshes=0}
+    local diagnostics={
+        attempts=0,activations=0,cashConfirmed=0,failed=0,unaffordableSkips=0,
+        verificationMisses=0,noclipApplied=0,launchGuards=0,staleRefreshes=0,
+        purchaseActivations=0,purchaseSuccesses=0,purchaseFailures=0,purchaseActorRetries=0,
+        lastPurchaseReason=nil,lastPurchaseName=nil,lastPurchasePrice=nil,lastPurchaseCash=nil,
+        lastPurchaseDistance=nil,lastPurchaseActor=nil,lastPurchaseKind=nil,
+    }
 
     local function lower(v) return tostring(v or ""):lower() end
     local function waitStep(seconds) if task and task.wait then task.wait(seconds or 0) else wait(seconds or 0) end end
@@ -92,17 +102,22 @@ return function(context)
         end)
     end
 
+    local function fireTouch(actor,target)
+        if not actor or not actor.Parent or not target or not target.Parent or type(firetouchinterest)~="function" then return false end
+        return pcall(function()
+            firetouchinterest(actor,target,0)
+            waitStep(0.018)
+            firetouchinterest(actor,target,1)
+        end)
+    end
+
     local function touchRoot(root,target,isCollector)
-        if not root or not root.Parent or not target or not target.Parent or type(firetouchinterest)~="function" then return false end
+        if not root or not root.Parent or not target or not target.Parent then return false end
         if isCollector then setCollectorNoClip(target) end
         local beforeCFrame=root.CFrame
         local beforeLinear=root.AssemblyLinearVelocity
         local beforeAngular=root.AssemblyAngularVelocity
-        local ok=pcall(function()
-            firetouchinterest(root,target,0)
-            waitStep(0.018)
-            firetouchinterest(root,target,1)
-        end)
+        local ok=fireTouch(root,target)
         if isCollector then
             guardCharacter(root,beforeCFrame,beforeLinear,beforeAngular)
             if task and task.delay then
@@ -121,7 +136,7 @@ return function(context)
         if activationAlive(entry) then return true end
         entry.prompt=nil; entry.clickDetector=nil; entry.touchPart=nil
         local queue={entry.object}; local cursor=1; local inspected=0
-        while cursor<=#queue and inspected<32 do
+        while cursor<=#queue and inspected<40 do
             local current=queue[cursor]; cursor=cursor+1
             if current:IsA("ProximityPrompt") and not entry.prompt then entry.prompt=current
             elseif current:IsA("ClickDetector") and not entry.clickDetector then entry.clickDetector=current
@@ -129,17 +144,17 @@ return function(context)
             if activationAlive(entry) then diagnostics.staleRefreshes=diagnostics.staleRefreshes+1; return true end
             for _,child in ipairs(current:GetChildren()) do
                 inspected=inspected+1
-                if inspected<=32 then table.insert(queue,child) end
-                if inspected>=32 then break end
+                if inspected<=40 then table.insert(queue,child) end
+                if inspected>=40 then break end
             end
         end
         return false
     end
 
-    local function activate(entry,root,isCollector)
+    local function activateCollection(entry,root)
         if entry.prompt and entry.prompt.Parent then return firePrompt(entry.prompt) end
         if entry.clickDetector and entry.clickDetector.Parent then return fireClick(entry.clickDetector) end
-        if entry.touchPart and entry.touchPart.Parent then return touchRoot(root,entry.touchPart,isCollector) end
+        if entry.touchPart and entry.touchPart.Parent then return touchRoot(root,entry.touchPart,true) end
         return false
     end
 
@@ -158,7 +173,7 @@ return function(context)
                     diagnostics.attempts=diagnostics.attempts+1
                     local before=tonumber(scanContext.getCash())
                     currencyMark("collect")
-                    local ok=activate(drop,root,true)
+                    local ok=activateCollection(drop,root)
                     if ok then
                         diagnostics.activations=diagnostics.activations+1
                         collectCooldowns[key]=now+COLLECT_COOLDOWN
@@ -202,7 +217,7 @@ return function(context)
         return before.cash and current and before.price>0 and current<before.cash or false
     end
     local function verifyPurchase(scanContext,button,before)
-        local deadline=os.clock()+0.85
+        local deadline=os.clock()+PURCHASE_CONFIRM_TIMEOUT
         repeat
             if purchaseApplied(scanContext,button,before) then return true end
             waitStep(0.1)
@@ -214,33 +229,125 @@ return function(context)
         local failures=(purchaseFailures[button.object] or 0)+1
         purchaseFailures[button.object]=failures
         button.failureCount=failures
-        button.blockedUntil=os.clock()+math.min(12,1.5+failures*1.5)
+        -- Keep compatibility retries responsive while avoiding a hot failure loop.
+        button.blockedUntil=os.clock()+math.min(5,0.65+failures*0.55)
+    end
+
+    local function purchaseActors(scanContext,root)
+        local result={}
+        local seen={}
+        local character=scanContext.LOCAL_PLAYER and scanContext.LOCAL_PLAYER.Character
+        local function add(part)
+            if part and part.Parent and part:IsA("BasePart") and not seen[part] then
+                seen[part]=true
+                table.insert(result,part)
+            end
+        end
+        add(root)
+        if character then
+            for _,name in ipairs(PURCHASE_ACTOR_NAMES) do add(character:FindFirstChild(name)) end
+        end
+        return result
+    end
+
+    local function purchaseKind(button)
+        if button.prompt and button.prompt.Parent then return "prompt" end
+        if button.clickDetector and button.clickDetector.Parent then return "click" end
+        if button.touchPart and button.touchPart.Parent then return "touch" end
+        return "none"
+    end
+
+    local function purchaseDistance(root,button)
+        local part=button and (button.touchPart or button.part)
+        if root and part and part.Parent and part:IsA("BasePart") then return (part.Position-root.Position).Magnitude end
+        return nil
+    end
+
+    local function activatePurchase(scanContext,root,button)
+        if button.prompt and button.prompt.Parent then
+            diagnostics.lastPurchaseActor="ProximityPrompt"
+            return firePrompt(button.prompt)
+        end
+        if button.clickDetector and button.clickDetector.Parent then
+            diagnostics.lastPurchaseActor="ClickDetector"
+            return fireClick(button.clickDetector)
+        end
+        local target=button.touchPart
+        if not target or not target.Parent then return false end
+        local actors=purchaseActors(scanContext,root)
+        if #actors==0 then return false end
+        local key=button.object or target
+        local index=purchaseActorIndexes[key] or 1
+        if index>#actors then index=1 end
+        local actor=actors[index]
+        purchaseActorIndexes[key]=(index%#actors)+1
+        if index>1 then diagnostics.purchaseActorRetries=diagnostics.purchaseActorRetries+1 end
+        diagnostics.lastPurchaseActor=actor.Name
+        return fireTouch(actor,target)
+    end
+
+    local function logPurchaseMiss(button,reason,cash,price,root)
+        diagnostics.lastPurchaseReason=reason
+        diagnostics.lastPurchaseName=button and (button.name or (button.object and button.object.Name)) or "?"
+        diagnostics.lastPurchasePrice=price
+        diagnostics.lastPurchaseCash=cash
+        diagnostics.lastPurchaseDistance=purchaseDistance(root,button)
+        diagnostics.lastPurchaseKind=purchaseKind(button)
+        local dist=diagnostics.lastPurchaseDistance and string.format("%.0f",diagnostics.lastPurchaseDistance) or "?"
+        print(string.format("[0xVyrs Tycoon] buy miss // %s // reason=%s // kind=%s // actor=%s // price=%s cash=%s dist=%s",
+            tostring(diagnostics.lastPurchaseName),tostring(reason),tostring(diagnostics.lastPurchaseKind),tostring(diagnostics.lastPurchaseActor or "?"),tostring(price),tostring(cash),dist))
     end
 
     local function buyButton(scanContext,button)
         if not button or button.automationAllowed~=true then return false end
         if button.blockedUntil and button.blockedUntil>os.clock() then return false end
-        if purchaseBlocked(button) then button.paidPurchase=true; button.affordable=false; button.locked=false; return false end
+        if purchaseBlocked(button) then
+            button.paidPurchase=true; button.affordable=false; button.locked=false
+            diagnostics.lastPurchaseReason="blocked-paid-context"
+            return false
+        end
+        if not refreshInteraction(button) then
+            diagnostics.purchaseFailures=diagnostics.purchaseFailures+1
+            purchaseCooldown(button)
+            logPurchaseMiss(button,"stale-interaction",tonumber(scanContext.getCash()),tonumber(button.price),scanContext.getLocalRoot())
+            return false
+        end
         local cash=tonumber(scanContext.getCash())
         local price=math.max(0,tonumber(button.price) or 0)
         if cash~=nil and price>cash then
-            button.affordable=false; button.locked=true; diagnostics.unaffordableSkips=diagnostics.unaffordableSkips+1; return false
+            button.affordable=false; button.locked=true; diagnostics.unaffordableSkips=diagnostics.unaffordableSkips+1
+            diagnostics.lastPurchaseReason="unaffordable"
+            return false
         end
         if cash==nil and price>0 then
             diagnostics.unaffordableSkips=diagnostics.unaffordableSkips+1
+            diagnostics.lastPurchaseReason="cash-unresolved"
             return false
         end
         local root=scanContext.getLocalRoot(); if not root then return false end
         local before=capturePurchase(scanContext,button)
         currencyMark("buy",price)
-        if not activate(button,root,false) then purchaseCooldown(button); return false end
+        diagnostics.purchaseActivations=diagnostics.purchaseActivations+1
+        if not activatePurchase(scanContext,root,button) then
+            diagnostics.purchaseFailures=diagnostics.purchaseFailures+1
+            purchaseCooldown(button)
+            logPurchaseMiss(button,"activation-failed",cash,price,root)
+            return false
+        end
         if verifyPurchase(scanContext,button,before) then
-            if button.object then purchaseFailures[button.object]=nil end
+            if button.object then
+                purchaseFailures[button.object]=nil
+                purchaseActorIndexes[button.object]=nil
+            end
             button.blockedUntil=nil; button.failureCount=0
+            diagnostics.purchaseSuccesses=diagnostics.purchaseSuccesses+1
+            diagnostics.lastPurchaseReason="success"
             return true
         end
         diagnostics.verificationMisses=diagnostics.verificationMisses+1
+        diagnostics.purchaseFailures=diagnostics.purchaseFailures+1
         purchaseCooldown(button)
+        logPurchaseMiss(button,"not-confirmed",cash,price,root)
         return false
     end
 
@@ -256,6 +363,10 @@ return function(context)
             attempts=diagnostics.attempts,activations=diagnostics.activations,cashConfirmed=diagnostics.cashConfirmed,
             failed=diagnostics.failed,unaffordableSkips=diagnostics.unaffordableSkips,verificationMisses=diagnostics.verificationMisses,
             actorRetries=0,rootFallbacks=0,staleRefreshes=diagnostics.staleRefreshes,noclipApplied=diagnostics.noclipApplied,launchGuards=diagnostics.launchGuards,
+            purchaseActivations=diagnostics.purchaseActivations,purchaseSuccesses=diagnostics.purchaseSuccesses,purchaseFailures=diagnostics.purchaseFailures,
+            purchaseActorRetries=diagnostics.purchaseActorRetries,lastPurchaseReason=diagnostics.lastPurchaseReason,lastPurchaseName=diagnostics.lastPurchaseName,
+            lastPurchasePrice=diagnostics.lastPurchasePrice,lastPurchaseCash=diagnostics.lastPurchaseCash,lastPurchaseDistance=diagnostics.lastPurchaseDistance,
+            lastPurchaseActor=diagnostics.lastPurchaseActor,lastPurchaseKind=diagnostics.lastPurchaseKind,
         }
     end
 
