@@ -3,7 +3,7 @@ return function()
 	local MAX_PARENT_DEPTH = 5
 	local MAX_LOCAL_INSPECT = 32
 	local ROOT_MIN_SCORE = 12
-	local HEAVY_SCAN_COOLDOWN = 1.35
+	local HEAVY_SCAN_COOLDOWN = 0.8
 	local EMPTY_SCAN_COOLDOWN = 5
 
 	local knownRoot, knownMeta, lastResult
@@ -12,7 +12,7 @@ return function()
 
 	local ROOT_HINTS = { "tycoon", "plot", "base", "factory", "island", "zone", "land" }
 	local PURCHASE_HINTS = { "button", "buy", "purchase", "upgrade", "unlock", "build", "pad", "dropper", "conveyor" }
-	local COLLECTOR_HINTS = { "collect", "collector", "cashout", "cash out", "claim cash", "income", "bank", "deposit", "till" }
+	local COLLECTOR_HINTS = { "collect", "collector", "cashout", "cash out", "claim cash", "deposit", "till" }
 	local OWNED_HINTS = { "purchased", "bought", "owned", "completed", "built" }
 	local PRICE_NAMES = { cost=true, price=true, amount=true, cash=true, money=true, value=true, required=true, requirement=true }
 	local BLOCKED = {
@@ -319,7 +319,7 @@ return function()
 	end
 	local function collectCandidates(root,descendants,data,context)
 		local interactions={}; for _,o in ipairs(descendants) do if isInteraction(o) then table.insert(interactions,o) end end
-		local records={}; local seen={}
+		local records={}; local seen={}; local purchaseInteractions={}
 		for _,interaction in ipairs(interactions) do
 			if not blockedAround(interaction,root) then
 				local host,price,depth=hostFor(interaction,root)
@@ -332,17 +332,22 @@ return function()
 			if #data.buttons>=context.CONFIG.maxButtons then break end
 			if not seen[r.host] then
 				local family=families[r.host.Parent or root] or 1; local hinted=hasAny(r.host.Name,PURCHASE_HINTS) or hasAny(r.host.Parent and r.host.Parent.Name or "",PURCHASE_HINTS)
-				if family>=2 or hinted or r.price==0 then local entry=buttonEntry(data,context,r.host,r.interaction,r.price); if entry then entry.familySize=family; seen[r.host]=true; table.insert(data.buttons,entry) end end
+				if family>=2 or hinted or r.price==0 then
+					local entry=buttonEntry(data,context,r.host,r.interaction,r.price)
+					if entry then entry.familySize=family; seen[r.host]=true; purchaseInteractions[r.interaction]=true; table.insert(data.buttons,entry) end
+				end
 			end
 		end
 		local seenCollector={}
 		for _,interaction in ipairs(interactions) do
 			if #data.drops>=context.CONFIG.maxDrops then break end
-			local host=collectorHost(interaction,root)
-			if host and not seenCollector[interaction] then
-				seenCollector[interaction]=true; local touch,prompt,click
-				if interaction:IsA("TouchTransmitter") then touch=interactionPart(interaction) elseif interaction:IsA("ProximityPrompt") then prompt=interaction else click=interaction end
-				table.insert(data.drops,{object=host,part=interactionPart(interaction) or referencePart(host),touchPart=touch,prompt=prompt,clickDetector=click,ownerMatch=data.ownerMatch,ownerVerified=data.ownerVerified,automationAllowed=data.automationAllowed,root=data.root,name=host.Name})
+			if not purchaseInteractions[interaction] then
+				local host=collectorHost(interaction,root); local activation=interactionPart(interaction) or interaction
+				if host and not seenCollector[activation] then
+					seenCollector[activation]=true; local touch,prompt,click
+					if interaction:IsA("TouchTransmitter") then touch=interactionPart(interaction) elseif interaction:IsA("ProximityPrompt") then prompt=interaction else click=interaction end
+					table.insert(data.drops,{object=host,part=interactionPart(interaction) or referencePart(host),touchPart=touch,prompt=prompt,clickDetector=click,ownerMatch=data.ownerMatch,ownerVerified=data.ownerVerified,automationAllowed=data.automationAllowed,root=data.root,name=host.Name})
+				end
 			end
 		end
 	end
