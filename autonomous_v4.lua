@@ -1,7 +1,7 @@
 --[[
-    0xVyrs Tycoon Autonomous Runtime v4.1
-    Canonical audited runtime: one module path, one target authority,
-    structured purchase outcomes, live-cash gating and isolated workers.
+    0xVyrs Tycoon Autonomous Runtime v4.2
+    Canonical audited runtime: adaptive confirmation, per-target backoff,
+    alternate-target dispatch, quiet health diagnostics and isolated workers.
 ]]
 
 local Players=game:GetService("Players")
@@ -10,13 +10,13 @@ local HttpService=game:GetService("HttpService")
 local LOCAL_PLAYER=Players.LocalPlayer
 local ENV=(type(getgenv)=="function" and getgenv()) or (type(getfenv)=="function" and getfenv(0)) or _G
 
-local RUNTIME_VERSION="4.1-audit2"
-local MODULE_MANIFEST={scanner="v4.1",currency="strict-canonical",collector="v4.1",brain="planner-canonical",stats="v4.1"}
+local RUNTIME_VERSION="4.2-polish1"
+local MODULE_MANIFEST={scanner="v4.1",currency="strict-canonical",collector="v4.2",brain="planner-canonical",stats="v4.1"}
 
 local previousCleanup=ENV.__VYRS_TYCOON_CLEANUP
 if type(previousCleanup)=="function" then pcall(previousCleanup) end
 
-local TOKEN="core-v4.1:"..tostring(os.clock())
+local TOKEN="core-v4.2:"..tostring(os.clock())
 ENV.__VYRS_TYCOON_ACTIVE_TOKEN=TOKEN
 
 local CONFIG={
@@ -65,7 +65,7 @@ local function safe(label,fn,...)
     if type(fn)~="function" then return nil end
     local ok,a,b,c=pcall(fn,...)
     if not ok then
-        warn("[0xVyrs Tycoon v4.1] "..label.." failed: "..tostring(a))
+        warn("[0xVyrs Tycoon v4.2] "..label.." failed: "..tostring(a))
         return nil
     end
     return a,b,c
@@ -84,13 +84,9 @@ local function loadSettings()
         source=decoded.placeConfigs[tostring(game.PlaceId)]
     end
     for key,value in pairs(source) do
-        if CONFIG[key]~=nil and key~="version" and key~="enabled" and key~="moduleBaseUrl" then
-            CONFIG[key]=value
-        end
+        if CONFIG[key]~=nil and key~="version" and key~="enabled" and key~="moduleBaseUrl" then CONFIG[key]=value end
     end
-    if CONFIG.strategy~="Fastest" and CONFIG.strategy~="Income" and CONFIG.strategy~="Rebirth" then
-        CONFIG.strategy="Fastest"
-    end
+    if CONFIG.strategy~="Fastest" and CONFIG.strategy~="Income" and CONFIG.strategy~="Rebirth" then CONFIG.strategy="Fastest" end
     CONFIG.enabled=false
 end
 
@@ -109,9 +105,7 @@ local function saveSettings()
     payload.placeConfigs=payload.placeConfigs or {}
     payload.placeConfigs[tostring(game.PlaceId)]={}
     for key,value in pairs(CONFIG) do
-        if key~="version" and key~="moduleBaseUrl" then
-            payload.placeConfigs[tostring(game.PlaceId)][key]=value
-        end
+        if key~="version" and key~="moduleBaseUrl" then payload.placeConfigs[tostring(game.PlaceId)][key]=value end
     end
     pcall(function() writefile(SETTINGS_FILE,HttpService:JSONEncode(payload)) end)
 end
@@ -184,16 +178,9 @@ local function getCashSourceKey()
 end
 
 local context={
-    Players=Players,
-    CoreGui=CoreGui,
-    HttpService=HttpService,
-    LOCAL_PLAYER=LOCAL_PLAYER,
-    CONFIG=CONFIG,
-    SHARED_ENV=ENV,
-    saveSettings=saveSettings,
-    getLocalRoot=getRoot,
-    getCash=getCash,
-    getCashSourceKey=getCashSourceKey,
+    Players=Players,CoreGui=CoreGui,HttpService=HttpService,LOCAL_PLAYER=LOCAL_PLAYER,
+    CONFIG=CONFIG,SHARED_ENV=ENV,saveSettings=saveSettings,getLocalRoot=getRoot,
+    getCash=getCash,getCashSourceKey=getCashSourceKey,
 }
 
 local moduleOrigins={}
@@ -212,42 +199,16 @@ local autopilot; autopilot,moduleOrigins.autopilot=init("autopilot",context)
 local boosts; boosts,moduleOrigins.boosts=init("boosts",context)
 
 local S={
-    data=nil,
-    target=nil,
-    targetScore=nil,
-    targetSignature=nil,
-    targetPhase="idle",
-    bought=0,
-    collected=0,
-    rewardsActivated=0,
-    purchaseDispatches=0,
-    purchaseFailures=0,
-    deferredPurchases=0,
-    blockedPurchases=0,
-    scanCount=0,
-    scanRequested=true,
-    scanDueAt=0,
-    scanReason="startup",
-    scanBusy=false,
-    buyBusy=false,
-    collectBusy=false,
-    rewardBusy=false,
-    rebirthBusy=false,
-    lastScan=-math.huge,
-    lastBuy=-math.huge,
-    lastCollect=-math.huge,
-    lastRender=-math.huge,
-    lastUi=-math.huge,
-    lastStats=-math.huge,
-    lastReward=-math.huge,
-    buyGate="initialising",
-    lastOutcome=nil,
-    rootConnections={},
-    connections={},
-    purchaseStates=setmetatable({}, {__mode="k"}),
-    brainStatus=nil,
-    collectorStatus=nil,
-    currencyStatus=nil,
+    data=nil,target=nil,targetScore=nil,targetSignature=nil,targetPhase="idle",
+    bought=0,collected=0,rewardsActivated=0,purchaseDispatches=0,purchaseFailures=0,
+    deferredPurchases=0,blockedPurchases=0,scanCount=0,
+    scanRequested=true,scanDueAt=0,scanReason="startup",scanBusy=false,buyBusy=false,
+    collectBusy=false,rewardBusy=false,rebirthBusy=false,
+    lastScan=-math.huge,lastBuy=-math.huge,lastCollect=-math.huge,lastRender=-math.huge,
+    lastUi=-math.huge,lastStats=-math.huge,lastReward=-math.huge,
+    buyGate="initialising",lastOutcome=nil,rootConnections={},connections={},
+    purchaseStates=setmetatable({}, {__mode="k"}),brainStatus=nil,collectorStatus=nil,currencyStatus=nil,
+    lastHealthFingerprint=nil,lastHealthPrint=-math.huge,lastProgressAt=os.clock(),lastSuccessAt=-math.huge,
 }
 
 local function disconnectAll(list)
@@ -305,8 +266,7 @@ local function normalise(data)
     data.automationAllowed=(data.ownerVerified==true) or CONFIG.requireOwnerMatch==false
     data.safeAutomation=data.automationAllowed
 
-    -- Live currency is authoritative. Never retain an old scan's balance when
-    -- the resolver becomes unknown or loses identity verification.
+    -- Live cash is authoritative. Unknown means unknown, never stale affordability.
     local cash=tonumber(getCash())
     data.cash=cash
 
@@ -334,11 +294,8 @@ local function normalise(data)
 
     for index=#(data.drops or {}),1,-1 do
         local drop=data.drops[index]
-        if not drop or not drop.object or not drop.object.Parent then
-            table.remove(data.drops,index)
-        else
-            drop.automationAllowed=data.automationAllowed
-        end
+        if not drop or not drop.object or not drop.object.Parent then table.remove(data.drops,index)
+        else drop.automationAllowed=data.automationAllowed end
     end
 
     local affordable,locked=0,0
@@ -352,15 +309,12 @@ local function normalise(data)
     return data
 end
 
-local function statsState()
-    return safe("stats.get",stats.get) or {}
-end
+local function statsState() return safe("stats.get",stats.get) or {} end
 
 local function actionable(button)
     if not validButton(button) or button.automationAllowed~=true or button.affordable~=true then return false end
     local state=stateFor(button)
-    if state and state.blockedUntil and state.blockedUntil>os.clock() then return false end
-    return true
+    return not (state and state.blockedUntil and state.blockedUntil>os.clock())
 end
 
 local function distanceTo(button)
@@ -388,14 +342,9 @@ local function chooseTarget()
 
     if tonumber(S.data.cash)==nil then
         local free={}
-        for _,button in ipairs(candidates) do
-            if (tonumber(button.price) or 0)==0 then table.insert(free,button) end
-        end
+        for _,button in ipairs(candidates) do if (tonumber(button.price) or 0)==0 then table.insert(free,button) end end
         candidates=free
-        if #candidates==0 and hasPriced then
-            S.buyGate="cash-unresolved"
-            return nil,nil
-        end
+        if #candidates==0 and hasPriced then S.buyGate="cash-unresolved" return nil,nil end
     end
 
     if #candidates==0 then
@@ -425,20 +374,17 @@ local function chooseTarget()
 end
 
 local function refreshBrain()
-    if CONFIG.learningEnabled then S.brainStatus=safe("brain.getStatus",brain.getStatus,S.data,statsState())
-    else S.brainStatus=nil end
+    if CONFIG.learningEnabled then S.brainStatus=safe("brain.getStatus",brain.getStatus,S.data,statsState()) else S.brainStatus=nil end
     return S.brainStatus
 end
 
 local function refreshTarget(force)
     normalise(S.data)
     if S.target and (not validButton(S.target) or buttonSignature(S.target)~=S.targetSignature) then
-        S.target=nil
-        S.targetSignature=nil
-        S.targetPhase="idle"
+        S.target=nil; S.targetSignature=nil; S.targetPhase="idle"
     end
-
     if force or not S.target or not actionable(S.target) then
+        local oldSignature=S.targetSignature
         local chosen,score=chooseTarget()
         if chosen then
             S.target=chosen
@@ -446,10 +392,9 @@ local function refreshTarget(force)
             S.targetSignature=buttonSignature(chosen)
             local state=stateFor(chosen)
             S.targetPhase=state and state.phase or "ready"
+            if oldSignature~=S.targetSignature then S.lastProgressAt=os.clock() end
         elseif not S.buyBusy and not (S.target and validButton(S.target)) then
-            S.target=nil
-            S.targetSignature=nil
-            S.targetPhase="idle"
+            S.target=nil; S.targetSignature=nil; S.targetPhase="idle"
         end
     end
     return S.target,S.targetScore
@@ -473,10 +418,7 @@ local function watchRoot(root)
         if structural(object) then requestScan(0.12,"descendant-removing") end
     end))
     table.insert(S.rootConnections,root.AncestryChanged:Connect(function(_,parent)
-        if not parent then
-            safe("scanner.invalidateRoot",scanner.invalidateRoot,root)
-            requestScan(0,"root-lost")
-        end
+        if not parent then safe("scanner.invalidateRoot",scanner.invalidateRoot,root) requestScan(0,"root-lost") end
     end))
 end
 
@@ -484,21 +426,19 @@ local function scanNow()
     if S.scanBusy or not active() then return end
     S.scanBusy=true
     local previousRoot=S.data and S.data.root
-    local started=os.clock()
     local ok,result=pcall(scanner.scan)
     if ok and result then
         S.data=normalise(result)
         S.scanCount=S.scanCount+1
         S.lastScan=os.clock()
         S.scanRequested=false
-        S.data.runtimeScanMs=(os.clock()-started)*1000
         if previousRoot~=S.data.root then watchRoot(S.data.root) end
         if CONFIG.learningEnabled then safe("brain.observe",brain.observe,S.data,statsState()) end
         safe("autopilot.updateRecovery",autopilot.updateRecovery,S.data)
         refreshTarget(true)
         refreshBrain()
     else
-        if not ok then warn("[0xVyrs Tycoon v4.1] scanner failed: "..tostring(result)) end
+        if not ok then warn("[0xVyrs Tycoon v4.2] scanner failed: "..tostring(result)) end
         S.scanRequested=false
         requestScan(1.0,"scanner-retry")
     end
@@ -508,14 +448,25 @@ end
 local function cooldownFor(outcome,state)
     local reason=outcome and outcome.reason or "unknown"
     if outcome and outcome.status=="deferred" then
-        if reason=="player-moving" then return 0.25 end
-        if reason=="cash-unresolved" or reason=="character-unavailable" then return 0.45 end
+        if reason=="player-moving" then return 0.18 end
+        if reason=="approach-stalled" then return 0.45 end
+        if reason=="cash-unresolved" or reason=="character-unavailable" then return 0.4 end
         if reason=="too-far" or reason=="autopilot-disabled" then return 0.9 end
-        return 0.55
+        return 0.5
     end
     if outcome and outcome.status=="blocked" then return 30 end
-    local failures=state and state.failures or 1
-    return math.min(2.0,0.5+failures*0.24)
+    local failures=math.max(1,state and state.failures or 1)
+    return math.min(4.0,0.55+(failures^1.35)*0.28)
+end
+
+local function learningFailure(reason)
+    return reason=="not-confirmed" or reason=="proximity-not-confirmed"
+end
+
+local function clearCurrentTarget()
+    S.target=nil
+    S.targetScore=nil
+    S.targetSignature=nil
 end
 
 local function dispatchBuy()
@@ -526,15 +477,11 @@ local function dispatchBuy()
 
     normalise(S.data)
     local target=refreshTarget(false)
-    if not target or not actionable(target) then
-        -- Advancing this timestamp prevents a 60 ms hot-loop while everything
-        -- is on cooldown or waiting for cash.
-        S.lastBuy=os.clock()
-        return
-    end
+    if not target or not actionable(target) then S.lastBuy=os.clock() return end
 
     local state=stateFor(target)
     S.buyBusy=true
+    S.lastBuy=os.clock()
     S.buyGate="dispatching"
     S.targetPhase="dispatching"
     if state then state.phase="dispatching" end
@@ -546,12 +493,9 @@ local function dispatchBuy()
         local dispatchError=success
         success=false
         outcome={status="failed",reason="collector-error",attempted=false,error=tostring(dispatchError)}
-        warn("[0xVyrs Tycoon v4.1] collector dispatch failed: "..tostring(dispatchError))
+        warn("[0xVyrs Tycoon v4.2] collector dispatch failed: "..tostring(dispatchError))
     end
-    if type(outcome)~="table" then
-        outcome={status=success and "success" or "failed",reason=success and "confirmed" or "unknown",attempted=true}
-    end
-
+    if type(outcome)~="table" then outcome={status=success and "success" or "failed",reason=success and "confirmed" or "unknown",attempted=true} end
     S.lastOutcome=outcome
     target.approaching=false
 
@@ -559,14 +503,16 @@ local function dispatchBuy()
         S.bought=S.bought+1
         S.buyGate="confirmed"
         S.targetPhase="confirmed"
+        S.lastSuccessAt=os.clock()
+        S.lastProgressAt=S.lastSuccessAt
         if stats.noteSpend then safe("stats.noteSpend",stats.noteSpend,target.price) end
         if CONFIG.learningEnabled then safe("brain.notePurchase",brain.notePurchase,target,S.data,statsState()) end
         local key=activationKey(target)
         if key then S.purchaseStates[key]=nil end
-        requestScan(0.08,"purchase-confirmed")
-        task.delay(0.4,function()
-            if active() and CONFIG.enabled then requestScan(0,"purchase-followup") end
-        end)
+        clearCurrentTarget()
+        requestScan(0.06,"purchase-confirmed")
+        task.delay(0.35,function() if active() and CONFIG.enabled then requestScan(0,"purchase-followup") end end)
+        S.lastBuy=os.clock()-0.5
     elseif outcome.status=="deferred" then
         S.deferredPurchases=S.deferredPurchases+1
         S.buyGate="deferred:"..tostring(outcome.reason)
@@ -576,6 +522,9 @@ local function dispatchBuy()
             state.phase="deferred"
             state.blockedUntil=os.clock()+cooldownFor(outcome,state)
         end
+        clearCurrentTarget()
+        refreshTarget(true)
+        S.lastBuy=os.clock()-0.25
     elseif outcome.status=="blocked" then
         S.blockedPurchases=S.blockedPurchases+1
         S.buyGate="safety-blocked:"..tostring(outcome.reason)
@@ -584,11 +533,12 @@ local function dispatchBuy()
             state.lastReason=outcome.reason
             state.lastEvidence=outcome.evidence
             state.phase="blocked"
-            -- Safety blocks are quarantined and revalidated later instead of
-            -- poisoning the target forever. The collector still refuses to fire.
             state.blockedUntil=os.clock()+cooldownFor(outcome,state)
         end
+        clearCurrentTarget()
         requestScan(0.2,"blocked-target")
+        refreshTarget(true)
+        S.lastBuy=os.clock()-0.25
     else
         S.purchaseFailures=S.purchaseFailures+1
         S.buyGate="failed:"..tostring(outcome.reason)
@@ -598,17 +548,17 @@ local function dispatchBuy()
             state.lastReason=outcome.reason
             state.phase="retry"
             state.blockedUntil=os.clock()+cooldownFor(outcome,state)
-            if CONFIG.learningEnabled and outcome.attempted==true and state.failures>=3 and not state.learned then
+            if CONFIG.learningEnabled and outcome.attempted==true and learningFailure(outcome.reason) and state.failures>=3 and not state.learned then
                 state.learned=true
                 safe("brain.noteFailure",brain.noteFailure,target)
             end
         end
-        if outcome.reason=="stale-interaction" or outcome.reason=="activation-unavailable" then
-            requestScan(0.1,"interaction-stale")
-        end
+        if outcome.reason=="stale-interaction" or outcome.reason=="activation-unavailable" then requestScan(0.1,"interaction-stale") end
+        clearCurrentTarget()
+        refreshTarget(true)
+        S.lastBuy=os.clock()-0.25
     end
 
-    S.lastBuy=os.clock()
     S.buyBusy=false
     refreshBrain()
 end
@@ -631,39 +581,17 @@ local function status()
     for key,value in pairs(base) do brainOut[key]=value end
     if S.target and validButton(S.target) then
         brainOut.plan={name=S.target.name or S.target.object.Name,price=S.target.price,score=S.targetScore,phase=S.targetPhase}
-    else
-        brainOut.plan=nil
-    end
+    else brainOut.plan=nil end
     return {
-        version=CONFIG.version,
-        runtimeVersion=RUNTIME_VERSION,
-        moduleManifest=MODULE_MANIFEST,
-        enabled=CONFIG.enabled,
-        autopilotEnabled=CONFIG.autopilotEnabled,
-        learningEnabled=CONFIG.learningEnabled,
-        burstMode=CONFIG.burstMode,
-        autoRewards=CONFIG.autoRewards,
-        autoRebirth=CONFIG.autoRebirth,
-        strategy=CONFIG.strategy,
-        bought=S.bought,
-        collected=S.collected,
-        rewardsActivated=S.rewardsActivated,
-        purchaseAttempts=S.purchaseDispatches,
-        purchaseFailures=S.purchaseFailures,
-        deferredPurchases=S.deferredPurchases,
-        blockedPurchases=S.blockedPurchases,
-        purchasePhase=S.targetPhase,
-        buyGate=S.buyGate,
-        lastOutcome=S.lastOutcome,
-        scanCount=S.scanCount,
-        root=S.data and S.data.rootName or nil,
-        ownerVerified=S.data and S.data.ownerVerified or false,
-        buttons=S.data and S.data.totalButtons or 0,
-        cash=S.data and S.data.cash or getCash(),
-        brain=brainOut,
-        collector=S.collectorStatus,
-        currency=S.currencyStatus,
-        autopilot=safe("autopilot.getStatus",autopilot.getStatus),
+        version=CONFIG.version,runtimeVersion=RUNTIME_VERSION,moduleManifest=MODULE_MANIFEST,
+        enabled=CONFIG.enabled,autopilotEnabled=CONFIG.autopilotEnabled,learningEnabled=CONFIG.learningEnabled,
+        burstMode=CONFIG.burstMode,autoRewards=CONFIG.autoRewards,autoRebirth=CONFIG.autoRebirth,strategy=CONFIG.strategy,
+        bought=S.bought,collected=S.collected,rewardsActivated=S.rewardsActivated,purchaseAttempts=S.purchaseDispatches,
+        purchaseFailures=S.purchaseFailures,deferredPurchases=S.deferredPurchases,blockedPurchases=S.blockedPurchases,
+        purchasePhase=S.targetPhase,buyGate=S.buyGate,lastOutcome=S.lastOutcome,scanCount=S.scanCount,
+        root=S.data and S.data.rootName or nil,ownerVerified=S.data and S.data.ownerVerified or false,
+        buttons=S.data and S.data.totalButtons or 0,cash=S.data and S.data.cash or getCash(),brain=brainOut,
+        collector=S.collectorStatus,currency=S.currencyStatus,autopilot=safe("autopilot.getStatus",autopilot.getStatus),
         boosts=safe("boosts.getStatus",boosts.getStatus),
     }
 end
@@ -673,27 +601,19 @@ local function renderNow()
     normalise(S.data)
     refreshTarget(false)
     local target=S.target
-    if CONFIG.highlightAffordable then safe("upgrades.render",upgrades.render,S.data,target)
-    else safe("upgrades.clear",upgrades.clear) end
+    if CONFIG.highlightAffordable then safe("upgrades.render",upgrades.render,S.data,target) else safe("upgrades.clear",upgrades.clear) end
     safe("upgrades.renderLabels",upgrades.renderLabels,S.data,target)
     if CONFIG.showWaypoint and target and validButton(target) then safe("upgrades.updateWaypoint",upgrades.updateWaypoint,target)
     else safe("upgrades.hideWaypoint",upgrades.hideWaypoint) end
-
     local now=os.clock()
     if now-S.lastUi>=CONFIG.uiInterval then
         S.lastUi=now
         refreshBrain()
-        safe("ui.update",ui.update,{
-            data=S.data,
-            nearest=target,
+        safe("ui.update",ui.update,{data=S.data,nearest=target,
             cheapest=safe("upgrades.getCheapestAffordable",upgrades.getCheapestAffordable,S.data),
             bestValue=safe("upgrades.getMostExpensiveAffordable",upgrades.getMostExpensiveAffordable,S.data),
-            nextLocked=safe("upgrades.getNextLocked",upgrades.getNextLocked,S.data),
-            stats=statsState(),
-            collected=S.collected,
-            bought=S.bought,
-            autonomous=status(),
-        })
+            nextLocked=safe("upgrades.getNextLocked",upgrades.getNextLocked,S.data),stats=statsState(),
+            collected=S.collected,bought=S.bought,autonomous=status()})
     end
 end
 
@@ -702,53 +622,29 @@ local function setEnabled(value)
     safe("autopilot.noteEnabled",autopilot.noteEnabled,CONFIG.enabled)
     if CONFIG.enabled then
         if CONFIG.learningEnabled and brain.beginRun then safe("brain.beginRun",brain.beginRun,CONFIG.strategy) end
-        S.lastBuy=-math.huge
-        S.lastCollect=-math.huge
-        S.lastReward=-math.huge
-        S.buyGate="starting"
+        S.lastBuy=-math.huge; S.lastCollect=-math.huge; S.lastReward=-math.huge
+        S.lastProgressAt=os.clock(); S.buyGate="starting"
         requestScan(0,"start")
         task.spawn(scanNow)
     else
-        S.target=nil
-        S.targetSignature=nil
-        S.targetPhase="idle"
-        S.buyGate="disabled"
-        safe("collector.cleanup",collector.cleanup)
-        safe("upgrades.clear",upgrades.clear)
-        safe("upgrades.clearLabels",upgrades.clearLabels)
-        safe("upgrades.hideWaypoint",upgrades.hideWaypoint)
+        clearCurrentTarget(); S.targetPhase="idle"; S.buyGate="disabled"
+        safe("collector.cleanup",collector.cleanup); safe("upgrades.clear",upgrades.clear)
+        safe("upgrades.clearLabels",upgrades.clearLabels); safe("upgrades.hideWaypoint",upgrades.hideWaypoint)
     end
     saveSettings()
 end
 
 local function start()
-    CONFIG.autoBuy=true
-    CONFIG.autoCollect=true
-    CONFIG.autopilotEnabled=true
-    setEnabled(true)
-    return true
+    CONFIG.autoBuy=true; CONFIG.autoCollect=true; CONFIG.autopilotEnabled=true; setEnabled(true); return true
 end
-
-local function stop()
-    setEnabled(false)
-    return true
-end
-
+local function stop() setEnabled(false) return true end
 local function setStrategy(value)
     if value=="Fastest" or value=="Income" or value=="Rebirth" then CONFIG.strategy=value end
-    S.target=nil
-    S.targetSignature=nil
-    refreshBrain()
-    saveSettings()
-    return CONFIG.strategy
+    clearCurrentTarget(); refreshBrain(); saveSettings(); return CONFIG.strategy
 end
-
 local function resetLearning()
     local result=safe("brain.resetPlaceProfile",brain.resetPlaceProfile)
-    S.target=nil
-    S.targetSignature=nil
-    requestScan(0,"learning-reset")
-    return result~=false
+    clearCurrentTarget(); requestScan(0,"learning-reset"); return result~=false
 end
 
 ui.onToggle("enabled",setEnabled)
@@ -757,37 +653,24 @@ ui.onToggle("autoBuy",function(v) CONFIG.autoBuy=v saveSettings() end)
 ui.onToggle("highlightAffordable",function(v) CONFIG.highlightAffordable=v saveSettings() end)
 ui.onToggle("showLabels",function(v) CONFIG.showLabels=v saveSettings() end)
 ui.onToggle("showWaypoint",function(v) CONFIG.showWaypoint=v saveSettings() end)
-ui.onToggle("requireOwnerMatch",function(v)
-    CONFIG.requireOwnerMatch=v
-    safe("scanner.invalidateRoot",scanner.invalidateRoot)
-    requestScan(0,"owner-setting")
-    saveSettings()
-end)
-ui.onToggle("autopilotEnabled",function(v) CONFIG.autopilotEnabled=v S.target=nil S.targetSignature=nil saveSettings() end)
-ui.onToggle("learningEnabled",function(v) CONFIG.learningEnabled=v S.target=nil S.targetSignature=nil saveSettings() end)
+ui.onToggle("requireOwnerMatch",function(v) CONFIG.requireOwnerMatch=v safe("scanner.invalidateRoot",scanner.invalidateRoot) requestScan(0,"owner-setting") saveSettings() end)
+ui.onToggle("autopilotEnabled",function(v) CONFIG.autopilotEnabled=v clearCurrentTarget() saveSettings() end)
+ui.onToggle("learningEnabled",function(v) CONFIG.learningEnabled=v clearCurrentTarget() saveSettings() end)
 ui.onToggle("burstMode",function(v) CONFIG.burstMode=v saveSettings() end)
 ui.onToggle("autoRewards",function(v) CONFIG.autoRewards=v saveSettings() end)
 ui.onToggle("autoRebirth",function(v) CONFIG.autoRebirth=v saveSettings() end)
 ui.onToggle("autoLoadGamePreset",function(v) CONFIG.autoLoadGamePreset=v saveSettings() end)
 ui.onCycle("strategy",setStrategy)
-ui.onCycle("buyMode",function(v) CONFIG.buyMode=v S.target=nil S.targetSignature=nil saveSettings() end)
+ui.onCycle("buyMode",function(v) CONFIG.buyMode=v clearCurrentTarget() saveSettings() end)
 ui.onCycle("touchMode",function(v) CONFIG.touchMode=v saveSettings() end)
 ui.onCycle("collectMode",function(v) CONFIG.collectMode=v saveSettings() end)
-if ui.onAction then
-    ui.onAction("start",start)
-    ui.onAction("stop",stop)
-    ui.onAction("resetLearning",resetLearning)
-end
+if ui.onAction then ui.onAction("start",start); ui.onAction("stop",stop); ui.onAction("resetLearning",resetLearning) end
 
 local function cleanup()
     if cleaned then return end
     cleaned=true
-    disconnectAll(S.rootConnections)
-    disconnectAll(S.connections)
-    safe("brain.save",brain.save)
-    safe("collector.cleanup",collector.cleanup)
-    safe("upgrades.destroy",upgrades.destroy)
-    safe("ui.destroy",ui.destroy)
+    disconnectAll(S.rootConnections); disconnectAll(S.connections)
+    safe("brain.save",brain.save); safe("collector.cleanup",collector.cleanup); safe("upgrades.destroy",upgrades.destroy); safe("ui.destroy",ui.destroy)
     if currency.invalidate then safe("currency.invalidate",currency.invalidate) end
     if ENV.__VYRS_TYCOON_ACTIVE_TOKEN==TOKEN then ENV.__VYRS_TYCOON_ACTIVE_TOKEN=nil end
     if ENV.__VYRS_TYCOON_CLEANUP==cleanup then ENV.__VYRS_TYCOON_CLEANUP=nil end
@@ -801,17 +684,11 @@ end
 ENV.__VYRS_TYCOON_CLEANUP=cleanup
 ENV.__VYRS_TYCOON_DIAGNOSTICS=S
 ENV.__VYRS_TYCOON_AUTONOMOUS={
-    start=start,
-    stop=stop,
-    setEnabled=setEnabled,
-    setStrategy=setStrategy,
-    resetLearning=resetLearning,
-    status=status,
-    cleanup=cleanup,
-    setAutopilot=function(v) CONFIG.autopilotEnabled=v==true S.target=nil S.targetSignature=nil saveSettings() return CONFIG.autopilotEnabled end,
+    start=start,stop=stop,setEnabled=setEnabled,setStrategy=setStrategy,resetLearning=resetLearning,status=status,cleanup=cleanup,
+    setAutopilot=function(v) CONFIG.autopilotEnabled=v==true clearCurrentTarget() saveSettings() return CONFIG.autopilotEnabled end,
     setAutoRebirth=function(v) CONFIG.autoRebirth=v==true saveSettings() return CONFIG.autoRebirth end,
     setAutoRewards=function(v) CONFIG.autoRewards=v==true saveSettings() return CONFIG.autoRewards end,
-    setLearning=function(v) CONFIG.learningEnabled=v==true S.target=nil S.targetSignature=nil saveSettings() return CONFIG.learningEnabled end,
+    setLearning=function(v) CONFIG.learningEnabled=v==true clearCurrentTarget() saveSettings() return CONFIG.learningEnabled end,
     setBurst=function(v) CONFIG.burstMode=v==true saveSettings() return CONFIG.burstMode end,
 }
 
@@ -819,7 +696,7 @@ local function worker(name,delay,callback)
     task.spawn(function()
         while active() do
             local ok,err=pcall(callback)
-            if not ok then warn("[0xVyrs Tycoon v4.1] "..name.." worker failed: "..tostring(err)) end
+            if not ok then warn("[0xVyrs Tycoon v4.2] "..name.." worker failed: "..tostring(err)) end
             task.wait(delay)
         end
     end)
@@ -829,61 +706,45 @@ table.insert(S.connections,LOCAL_PLAYER.CharacterAdded:Connect(function()
     safe("scanner.invalidateRoot",scanner.invalidateRoot)
     if currency.invalidate then safe("currency.invalidate",currency.invalidate) end
     if stats.resetBaseline then safe("stats.resetBaseline",stats.resetBaseline) end
-    S.target=nil
-    S.targetSignature=nil
-    requestScan(0,"character-added")
+    clearCurrentTarget(); requestScan(0,"character-added")
 end))
 
 worker("scan",0.10,function()
     if not CONFIG.enabled or S.scanBusy then return end
     local now=os.clock()
-    if S.scanRequested and now>=S.scanDueAt then
-        scanNow()
-    elseif not S.scanRequested and now-S.lastScan>=CONFIG.scanInterval then
-        requestScan(0,"periodic")
-    end
+    if S.scanRequested and now>=S.scanDueAt then scanNow()
+    elseif not S.scanRequested and now-S.lastScan>=CONFIG.scanInterval then requestScan(0,"periodic") end
 end)
 
 worker("buy",0.06,function()
     if not CONFIG.enabled or S.buyBusy or not S.data then return end
     normalise(S.data)
     local interval=CONFIG.buyInterval
-    if CONFIG.autopilotEnabled and CONFIG.burstMode then
-        interval=safe("autopilot.getBuyInterval",autopilot.getBuyInterval,S.data,S.brainStatus) or interval
-    end
+    if CONFIG.autopilotEnabled and CONFIG.burstMode then interval=safe("autopilot.getBuyInterval",autopilot.getBuyInterval,S.data,S.brainStatus) or interval end
     if os.clock()-S.lastBuy>=interval then dispatchBuy() end
 end)
 
 worker("collect",0.12,function()
     if not CONFIG.enabled or S.collectBusy or not S.data then return end
     local interval=CONFIG.collectInterval
-    if CONFIG.autopilotEnabled then
-        interval=safe("autopilot.getCollectInterval",autopilot.getCollectInterval,S.data,S.brainStatus) or interval
-    end
+    if CONFIG.autopilotEnabled then interval=safe("autopilot.getCollectInterval",autopilot.getCollectInterval,S.data,S.brainStatus) or interval end
     if os.clock()-S.lastCollect>=interval then collectNow() end
 end)
 
 worker("render",0.16,function()
-    if CONFIG.enabled and os.clock()-S.lastRender>=CONFIG.renderInterval then
-        S.lastRender=os.clock()
-        renderNow()
-    end
+    if CONFIG.enabled and os.clock()-S.lastRender>=CONFIG.renderInterval then S.lastRender=os.clock(); renderNow() end
 end)
 
 worker("stats",0.22,function()
     if not CONFIG.enabled or os.clock()-S.lastStats<CONFIG.statsInterval then return end
-    S.lastStats=os.clock()
-    safe("stats.update",stats.update)
-    if CONFIG.learningEnabled and brain.observeEconomy then
-        safe("brain.observeEconomy",brain.observeEconomy,getCash(),statsState())
-    end
+    S.lastStats=os.clock(); safe("stats.update",stats.update)
+    if CONFIG.learningEnabled and brain.observeEconomy then safe("brain.observeEconomy",brain.observeEconomy,getCash(),statsState()) end
     refreshBrain()
 end)
 
 worker("rewards",0.5,function()
     if not CONFIG.enabled or not CONFIG.autoRewards or S.rewardBusy or not S.data or os.clock()-S.lastReward<2.5 then return end
-    S.lastReward=os.clock()
-    S.rewardBusy=true
+    S.lastReward=os.clock(); S.rewardBusy=true
     S.rewardsActivated=S.rewardsActivated+(safe("boosts.sweep",boosts.sweep,S.data) or 0)
     S.rewardBusy=false
 end)
@@ -900,9 +761,7 @@ worker("completion",0.5,function()
                     safe("scanner.invalidateRoot",scanner.invalidateRoot)
                     if currency.invalidate then safe("currency.invalidate",currency.invalidate) end
                     if stats.resetBaseline then safe("stats.resetBaseline",stats.resetBaseline) end
-                    S.target=nil
-                    S.targetSignature=nil
-                    requestScan(0,"rebirth")
+                    clearCurrentTarget(); requestScan(0,"rebirth")
                 end
                 S.rebirthBusy=false
             end)
@@ -910,8 +769,7 @@ worker("completion",0.5,function()
     end
 end)
 
-worker("health",2,function()
-    if not CONFIG.enabled then return end
+local function healthFields()
     normalise(S.data)
     refreshTarget(false)
     local target=S.target and (S.target.name or (S.target.object and S.target.object.Name)) or "nil"
@@ -922,16 +780,31 @@ worker("health",2,function()
     local outcome=S.lastOutcome and (tostring(S.lastOutcome.status)..":"..tostring(S.lastOutcome.reason)) or "none"
     local evidence=S.lastOutcome and S.lastOutcome.evidence and tostring(S.lastOutcome.evidence) or "none"
     local scanMs=S.data and ((S.data.debug and tonumber(S.data.debug.scanTimeMs)) or tonumber(S.data.runtimeScanMs))
-    print(string.format("[0xVyrs Tycoon v4.1] HEALTH // gate=%s phase=%s cash=%s buttons=%s affordable=%s target=%s price=%s dispatches=%d outcome=%s evidence=%s scan=%s",
+    local fingerprint=table.concat({tostring(S.buyGate),tostring(S.targetPhase),buttons,affordable,target,price,outcome,evidence},"|")
+    local line=string.format("[0xVyrs Tycoon v4.2] HEALTH // gate=%s phase=%s cash=%s buttons=%s affordable=%s target=%s price=%s dispatches=%d outcome=%s evidence=%s scan=%s",
         tostring(S.buyGate),tostring(S.targetPhase),cash,buttons,affordable,tostring(target),price,S.purchaseDispatches,outcome,evidence,
-        scanMs and string.format("%.1fms",scanMs) or "--"))
+        scanMs and string.format("%.1fms",scanMs) or "--")
+    return fingerprint,line
+end
+
+worker("health",1,function()
+    if not CONFIG.enabled then return end
+    local now=os.clock()
+    local fingerprint,line=healthFields()
+    local changed=fingerprint~=S.lastHealthFingerprint
+    local gate=tostring(S.buyGate or "")
+    local unhealthy=gate:find("failed:",1,true)==1 or gate:find("deferred:",1,true)==1
+        or gate:find("safety-blocked:",1,true)==1 or gate=="all-on-cooldown" or gate=="owner-blocked" or gate=="cash-unresolved"
+    local stuck=unhealthy and now-S.lastProgressAt>=8
+    if changed or (stuck and now-S.lastHealthPrint>=8) then
+        print(line)
+        S.lastHealthPrint=now
+        S.lastHealthFingerprint=fingerprint
+    end
 end)
 
-worker("autosave",15,function()
-    saveSettings()
-    if CONFIG.learningEnabled then safe("brain.save",brain.save) end
-end)
+worker("autosave",15,function() saveSettings(); if CONFIG.learningEnabled then safe("brain.save",brain.save) end end)
 
-print("[0xVyrs Tycoon v4.1] runtime="..RUNTIME_VERSION.." loaded")
-print("[0xVyrs Tycoon v4.1] modules // scanner="..MODULE_MANIFEST.scanner.." currency="..MODULE_MANIFEST.currency.." collector="..MODULE_MANIFEST.collector.." brain="..MODULE_MANIFEST.brain.." stats="..MODULE_MANIFEST.stats)
-print("[0xVyrs Tycoon v4.1] module origins // scanner="..tostring(moduleOrigins.scanner).." currency="..tostring(moduleOrigins.currency).." collector="..tostring(moduleOrigins.collector).." brain="..tostring(moduleOrigins.brain))
+print("[0xVyrs Tycoon v4.2] runtime="..RUNTIME_VERSION.." loaded")
+print("[0xVyrs Tycoon v4.2] modules // scanner="..MODULE_MANIFEST.scanner.." currency="..MODULE_MANIFEST.currency.." collector="..MODULE_MANIFEST.collector.." brain="..MODULE_MANIFEST.brain.." stats="..MODULE_MANIFEST.stats)
+print("[0xVyrs Tycoon v4.2] module origins // scanner="..tostring(moduleOrigins.scanner).." currency="..tostring(moduleOrigins.currency).." collector="..tostring(moduleOrigins.collector).." brain="..tostring(moduleOrigins.brain))
