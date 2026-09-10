@@ -1,13 +1,9 @@
 return function()
-	local CACHE_TTL = 15
 	local MAX_ROOT_DEPTH = 5
-	local MAX_INTERACTION_PARENT_DEPTH = 2
+	local MAX_INTERACTION_PARENT_DEPTH = 3
 
-	local cache = {
-		purchaseContainers = {},
-		collectorCandidates = {},
-		bounds = {},
-	}
+	local knownRoot = nil
+	local knownOwnerMisses = 0
 
 	local PRICE_NAMES = {
 		cost = true,
@@ -36,35 +32,15 @@ return function()
 		"collector",
 	}
 
-	local PAID_PURCHASE_WORDS = {
-		"robux",
-		"gamepass",
-		"game pass",
-		"developer product",
-		"dev product",
-		"productid",
-		"product id",
-		"developerproductid",
-		"developer product id",
-		"gamepassid",
-		"game pass id",
-		"passid",
-		"pass id",
-		"assetid",
-		"asset id",
-		"robuxprice",
-		"robux price",
-		"premium",
-		"r$",
-		"rbx",
-	}
-
-	local BLOCKED_INTERACTION_WORDS = {
+	local BLOCKED_PHRASES = {
 		"watch ad",
-		"watch_ad",
+		"watch ads",
+		"watch video",
 		"video ad",
+		"video ads",
 		"rewarded ad",
-		"advert",
+		"rewarded video",
+		"ad reward",
 		"advertisement",
 		"sponsor",
 		"free cash",
@@ -78,9 +54,21 @@ return function()
 		"starterpack",
 		"starter pack",
 		"gamepass",
+		"game pass",
 		"developer product",
-		"premium",
+		"dev product",
+		"productid",
+		"product id",
+		"gamepassid",
+		"game pass id",
+		"passid",
+		"pass id",
+		"assetid",
+		"asset id",
+		"premium purchase",
 		"robux",
+		"r$",
+		"rbx",
 	}
 
 	local function lower(value)
@@ -101,6 +89,24 @@ return function()
 		return false
 	end
 
+	local function hasStandaloneToken(text, token)
+		local normalized = " " .. lower(text):gsub("[^%w]+", " ") .. " "
+		return normalized:find(" " .. token .. " ", 1, true) ~= nil
+	end
+
+	local function textLooksBlocked(value)
+		local text = lower(value)
+		for _, phrase in ipairs(BLOCKED_PHRASES) do
+			if text:find(phrase, 1, true) then
+				return true
+			end
+		end
+
+		return hasStandaloneToken(text, "ad")
+			or hasStandaloneToken(text, "ads")
+			or hasStandaloneToken(text, "advert")
+	end
+
 	local function isContainer(object)
 		return object and (object:IsA("Model") or object:IsA("Folder"))
 	end
@@ -118,7 +124,7 @@ return function()
 		end
 
 		local text = lower(value):gsub(",", ""):gsub("_", " ")
-		local scientific = text:match("([%d%.]+[eE][%+%-]?%d+)")
+		local scientific = text:match("([%d%.]+e[%+%-]?%d+)")
 		if scientific then
 			local parsed = tonumber(scientific)
 			if parsed and parsed >= 0 then
@@ -156,8 +162,7 @@ return function()
 	end
 
 	local function hasCashPriceText(text)
-		local parsed = parseCompactNumber(text)
-		if parsed == nil then
+		if parseCompactNumber(text) == nil then
 			return false
 		end
 
@@ -173,11 +178,19 @@ return function()
 			or clean:find("price", 1, true) ~= nil
 	end
 
-	local function getPriceAttribute(object)
+	local function getAttributes(object)
 		local ok, attributes = pcall(function()
 			return object:GetAttributes()
 		end)
-		if not ok or type(attributes) ~= "table" then
+		if ok and type(attributes) == "table" then
+			return attributes
+		end
+		return nil
+	end
+
+	local function getPriceAttribute(object)
+		local attributes = getAttributes(object)
+		if not attributes then
 			return nil
 		end
 
@@ -202,17 +215,16 @@ return function()
 			return attributePrice
 		end
 
-		if isPriceName(object.Name) and (object:IsA("IntValue") or object:IsA("NumberValue") or object:IsA("StringValue")) then
-			local direct = parseCompactNumber(object.Value)
-			if direct ~= nil then
-				return direct
+		if isPriceName(object.Name)
+			and (object:IsA("IntValue") or object:IsA("NumberValue") or object:IsA("StringValue")) then
+			local parsed = parseCompactNumber(object.Value)
+			if parsed ~= nil then
+				return parsed
 			end
 		end
 
-		if object:IsA("TextLabel") or object:IsA("TextButton") then
-			if hasCashPriceText(object.Text) then
-				return parseCompactNumber(object.Text)
-			end
+		if (object:IsA("TextLabel") or object:IsA("TextButton")) and hasCashPriceText(object.Text) then
+			return parseCompactNumber(object.Text)
 		end
 
 		for _, descendant in ipairs(object:GetDescendants()) do
@@ -227,12 +239,10 @@ return function()
 				if parsed ~= nil then
 					return parsed
 				end
-			elseif descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-				if hasCashPriceText(descendant.Text) then
-					local parsed = parseCompactNumber(descendant.Text)
-					if parsed ~= nil then
-						return parsed
-					end
+			elseif (descendant:IsA("TextLabel") or descendant:IsA("TextButton")) and hasCashPriceText(descendant.Text) then
+				local parsed = parseCompactNumber(descendant.Text)
+				if parsed ~= nil then
+					return parsed
 				end
 			end
 		end
@@ -243,30 +253,53 @@ return function()
 		return nil
 	end
 
-	local function hasAnyDescendantText(object, words)
-		if hasAny(object.Name, words) then
+	local function instanceLooksBlocked(instance)
+		if not instance then
+			return false
+		end
+
+		if textLooksBlocked(instance.Name) then
 			return true
 		end
 
-		for _, descendant in ipairs(object:GetDescendants()) do
-			if hasAny(descendant.Name, words) then
+		if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
+			if textLooksBlocked(instance.Text) then
 				return true
 			end
-			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-				if hasAny(descendant.Text, words) then
+		elseif instance:IsA("ProximityPrompt") then
+			if textLooksBlocked(instance.ActionText) or textLooksBlocked(instance.ObjectText) then
+				return true
+			end
+		end
+
+		local attributes = getAttributes(instance)
+		if attributes then
+			for key, value in pairs(attributes) do
+				local keyLower = lower(key)
+				if textLooksBlocked(key)
+					or keyLower:find("productid", 1, true)
+					or keyLower:find("gamepass", 1, true)
+					or keyLower:find("adunit", 1, true)
+					or keyLower:find("rewardedad", 1, true)
+					or (type(value) == "string" and textLooksBlocked(value)) then
 					return true
 				end
 			end
 		end
+
 		return false
 	end
 
-	local function isPaidPurchase(object)
-		return hasAnyDescendantText(object, PAID_PURCHASE_WORDS)
-	end
-
 	local function isBlockedInteraction(object)
-		return isPaidPurchase(object) or hasAnyDescendantText(object, BLOCKED_INTERACTION_WORDS)
+		if instanceLooksBlocked(object) then
+			return true
+		end
+		for _, descendant in ipairs(object:GetDescendants()) do
+			if instanceLooksBlocked(descendant) then
+				return true
+			end
+		end
+		return false
 	end
 
 	local function partHasTouchInterest(part)
@@ -314,11 +347,6 @@ return function()
 		return getTouchPart(object), getPrompt(object), getClickDetector(object)
 	end
 
-	local function hasActivation(object)
-		local touchPart, prompt, clickDetector = getInteraction(object)
-		return touchPart ~= nil or prompt ~= nil or clickDetector ~= nil
-	end
-
 	local function getReferencePart(object)
 		local touchPart = getTouchPart(object)
 		if touchPart then
@@ -353,45 +381,9 @@ return function()
 		return false
 	end
 
-	local function getPurchaseContainers(root)
-		local now = os.clock()
-		local cached = cache.purchaseContainers[root]
-		if cached and cached.expires > now then
-			return cached.items
-		end
-
-		local containers = {}
-		for _, descendant in ipairs(root:GetDescendants()) do
-			if isPurchaseContainer(descendant) then
-				table.insert(containers, descendant)
-			end
-		end
-		cache.purchaseContainers[root] = { items = containers, expires = now + CACHE_TTL }
-		return containers
-	end
-
-	local function getCollectorCandidates(root)
-		local now = os.clock()
-		local cached = cache.collectorCandidates[root]
-		if cached and cached.expires > now then
-			return cached.items
-		end
-
-		local candidates = {}
-		for _, descendant in ipairs(root:GetDescendants()) do
-			if hasAny(descendant.Name, COLLECTOR_WORDS) and not isPurchaseContainer(descendant) then
-				table.insert(candidates, descendant)
-			end
-		end
-		cache.collectorCandidates[root] = { items = candidates, expires = now + CACHE_TTL }
-		return candidates
-	end
-
 	local function hasOwnerAttribute(object)
-		local ok, attributes = pcall(function()
-			return object:GetAttributes()
-		end)
-		if not ok or type(attributes) ~= "table" then
+		local attributes = getAttributes(object)
+		if not attributes then
 			return false
 		end
 		for key in pairs(attributes) do
@@ -421,6 +413,12 @@ return function()
 			if childName:find("purchasedobjects", 1, true) or childName == "purchased" then score = score + 5 end
 			if childName:find("drops", 1, true) or childName:find("collector", 1, true) then score = score + 4 end
 			if childName:find("owner", 1, true) or hasOwnerAttribute(child) then score = score + 7 end
+
+			if isContainer(child) then
+				for _, grandchild in ipairs(child:GetChildren()) do
+					if isPurchaseContainer(grandchild) then score = score + 5 end
+				end
+			end
 		end
 
 		return score
@@ -430,11 +428,12 @@ return function()
 		if depth > MAX_ROOT_DEPTH then
 			return
 		end
+
 		for _, child in ipairs(parent:GetChildren()) do
 			if isContainer(child) then
 				local score = structureScore(child)
 				if score >= 7 then
-					table.insert(output, { root = child, rawScore = score })
+					table.insert(output, { root = child, rawScore = score, ownerVerified = false })
 				end
 				walkPotentialRoots(child, depth + 1, output)
 			end
@@ -455,10 +454,8 @@ return function()
 	end
 
 	local function ownerSignalMatches(context, object)
-		local ok, attributes = pcall(function()
-			return object:GetAttributes()
-		end)
-		if ok and type(attributes) == "table" then
+		local attributes = getAttributes(object)
+		if attributes then
 			for key, value in pairs(attributes) do
 				if lower(key):find("owner", 1, true) and ownerValueMatches(context, value) then
 					return true
@@ -486,11 +483,86 @@ return function()
 		return false
 	end
 
-	local function markVerifiedOwners(context, candidates)
+	local function rootHasVerifiedOwner(context, root, descendants)
+		if ownerSignalMatches(context, root) then
+			return true
+		end
+		for _, descendant in ipairs(descendants or root:GetDescendants()) do
+			if ownerSignalMatches(context, descendant) then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function getRootBounds(root)
+		if root:IsA("Model") then
+			local ok, cframe, size = pcall(function()
+				return root:GetBoundingBox()
+			end)
+			if ok and cframe and size then
+				return { cframe = cframe, size = size }
+			end
+		end
+
+		local minX, minY, minZ = math.huge, math.huge, math.huge
+		local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+		local found = false
+		for _, descendant in ipairs(root:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				found = true
+				local position = descendant.Position
+				local half = descendant.Size * 0.5
+				minX = math.min(minX, position.X - half.X)
+				minY = math.min(minY, position.Y - half.Y)
+				minZ = math.min(minZ, position.Z - half.Z)
+				maxX = math.max(maxX, position.X + half.X)
+				maxY = math.max(maxY, position.Y + half.Y)
+				maxZ = math.max(maxZ, position.Z + half.Z)
+			end
+		end
+
+		if found then
+			return {
+				minX = minX, minY = minY, minZ = minZ,
+				maxX = maxX, maxY = maxY, maxZ = maxZ,
+			}
+		end
+		return nil
+	end
+
+	local function localPlayerInsideRoot(context, root)
+		local localRoot = context.getLocalRoot and context.getLocalRoot()
+		if not localRoot or not root then
+			return false
+		end
+
+		local bounds = getRootBounds(root)
+		if not bounds then
+			return false
+		end
+
+		local padding = 35
+		if bounds.cframe and bounds.size then
+			local localPosition = bounds.cframe:PointToObjectSpace(localRoot.Position)
+			return math.abs(localPosition.X) <= (bounds.size.X * 0.5) + padding
+				and math.abs(localPosition.Y) <= (bounds.size.Y * 0.5) + padding
+				and math.abs(localPosition.Z) <= (bounds.size.Z * 0.5) + padding
+		end
+
+		local position = localRoot.Position
+		return position.X >= bounds.minX - padding and position.X <= bounds.maxX + padding
+			and position.Y >= bounds.minY - padding and position.Y <= bounds.maxY + padding
+			and position.Z >= bounds.minZ - padding and position.Z <= bounds.maxZ + padding
+	end
+
+	local function findTycoonRoots(context)
+		local candidates = {}
+		walkPotentialRoots(workspace, 1, candidates)
+
 		local byRoot = {}
 		for _, candidate in ipairs(candidates) do
 			byRoot[candidate.root] = candidate
-			candidate.ownerVerified = false
 		end
 
 		for _, descendant in ipairs(workspace:GetDescendants()) do
@@ -506,89 +578,19 @@ return function()
 				end
 			end
 		end
-	end
-
-	local function getRootBounds(root)
-		local now = os.clock()
-		local cached = cache.bounds[root]
-		if cached and cached.expires > now then
-			return cached
-		end
-
-		local bounds
-		if root:IsA("Model") then
-			local ok, cframe, size = pcall(function()
-				return root:GetBoundingBox()
-			end)
-			if ok and cframe and size then
-				bounds = { cframe = cframe, size = size }
-			end
-		end
-
-		if not bounds then
-			local minX, minY, minZ = math.huge, math.huge, math.huge
-			local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
-			local found = false
-			for _, descendant in ipairs(root:GetDescendants()) do
-				if descendant:IsA("BasePart") then
-					found = true
-					local position = descendant.Position
-					local half = descendant.Size * 0.5
-					minX = math.min(minX, position.X - half.X)
-					minY = math.min(minY, position.Y - half.Y)
-					minZ = math.min(minZ, position.Z - half.Z)
-					maxX = math.max(maxX, position.X + half.X)
-					maxY = math.max(maxY, position.Y + half.Y)
-					maxZ = math.max(maxZ, position.Z + half.Z)
-				end
-			end
-			if found then
-				bounds = {
-					minX = minX, minY = minY, minZ = minZ,
-					maxX = maxX, maxY = maxY, maxZ = maxZ,
-				}
-			end
-		end
-
-		bounds = bounds or {}
-		bounds.expires = now + CACHE_TTL
-		cache.bounds[root] = bounds
-		return bounds
-	end
-
-	local function localPlayerInsideRoot(context, root)
-		local localRoot = context.getLocalRoot and context.getLocalRoot()
-		if not localRoot or not root then
-			return false
-		end
-
-		local bounds = getRootBounds(root)
-		local padding = 35
-		if bounds.cframe and bounds.size then
-			local localPosition = bounds.cframe:PointToObjectSpace(localRoot.Position)
-			return math.abs(localPosition.X) <= (bounds.size.X * 0.5) + padding
-				and math.abs(localPosition.Y) <= (bounds.size.Y * 0.5) + padding
-				and math.abs(localPosition.Z) <= (bounds.size.Z * 0.5) + padding
-		end
-		if not bounds.minX then
-			return false
-		end
-		local position = localRoot.Position
-		return position.X >= bounds.minX - padding and position.X <= bounds.maxX + padding
-			and position.Y >= bounds.minY - padding and position.Y <= bounds.maxY + padding
-			and position.Z >= bounds.minZ - padding and position.Z <= bounds.maxZ + padding
-	end
-
-	local function findTycoonRoots(context)
-		local candidates = {}
-		walkPotentialRoots(workspace, 1, candidates)
-		markVerifiedOwners(context, candidates)
 
 		for _, candidate in ipairs(candidates) do
 			candidate.inside = localPlayerInsideRoot(context, candidate.root)
+			local nestedPenalty = 0
+			for _, child in ipairs(candidate.root:GetChildren()) do
+				if byRoot[child] then
+					nestedPenalty = nestedPenalty + 18
+				end
+			end
 			candidate.score = candidate.rawScore
 				+ (candidate.ownerVerified and 1000 or 0)
 				+ (candidate.inside and 45 or 0)
+				- nestedPenalty
 		end
 
 		table.sort(candidates, function(a, b)
@@ -629,10 +631,11 @@ return function()
 		if not candidate or not candidate.Parent or seenButtons[candidate] then
 			return false
 		end
-		if hasAncestorNamed(candidate, data.root, { "purchasedobjects", "purchased" }) then
+		if hasAncestorNamed(candidate, data.root, { "purchasedobjects", "purchased", "bought", "owneditems" }) then
 			return false
 		end
-		if isBlockedInteraction(candidate) or not hasActivation(candidate) then
+		if isBlockedInteraction(candidate) then
+			data.paidSkipped = data.paidSkipped + 1
 			return false
 		end
 
@@ -651,22 +654,6 @@ return function()
 		return true
 	end
 
-	local function scanPurchaseContainers(root, data, context, seenButtons)
-		for _, container in ipairs(getPurchaseContainers(root)) do
-			if #data.buttons >= context.CONFIG.maxButtons then
-				return
-			end
-			if container and container.Parent then
-				for _, child in ipairs(container:GetChildren()) do
-					if #data.buttons >= context.CONFIG.maxButtons then
-						return
-					end
-					registerPurchase(data, context, child, seenButtons)
-				end
-			end
-		end
-	end
-
 	local function interactionObject(interaction, root)
 		local current = interaction.Parent
 		local depth = 0
@@ -680,37 +667,58 @@ return function()
 		return nil
 	end
 
-	local function scanInteractionFallback(root, data, context, seenButtons)
-		for _, descendant in ipairs(root:GetDescendants()) do
-			if #data.buttons >= context.CONFIG.maxButtons then
-				return
-			end
+	local function collectCandidates(root, descendants, data, context)
+		local seenButtons = {}
+		local purchaseContainers = {}
 
-			local isInteraction = descendant:IsA("TouchTransmitter")
-				or descendant:IsA("ProximityPrompt")
-				or descendant:IsA("ClickDetector")
-			if isInteraction then
-				local candidate = interactionObject(descendant, root)
-				if candidate then
-					registerPurchase(data, context, candidate, seenButtons)
+		for _, descendant in ipairs(descendants) do
+			if isPurchaseContainer(descendant) then
+				table.insert(purchaseContainers, descendant)
+			end
+		end
+
+		for _, container in ipairs(purchaseContainers) do
+			for _, child in ipairs(container:GetChildren()) do
+				if #data.buttons >= context.CONFIG.maxButtons then
+					break
+				end
+				registerPurchase(data, context, child, seenButtons)
+			end
+			if #data.buttons >= context.CONFIG.maxButtons then
+				break
+			end
+		end
+
+		if #data.buttons < context.CONFIG.maxButtons then
+			for _, descendant in ipairs(descendants) do
+				if #data.buttons >= context.CONFIG.maxButtons then
+					break
+				end
+				if descendant:IsA("TouchTransmitter")
+					or descendant:IsA("ProximityPrompt")
+					or descendant:IsA("ClickDetector") then
+					local candidate = interactionObject(descendant, root)
+					if candidate then
+						registerPurchase(data, context, candidate, seenButtons)
+					end
 				end
 			end
 		end
-	end
 
-	local function scanCollectors(root, data, context)
-		local seenDrops = {}
-		for _, candidate in ipairs(getCollectorCandidates(root)) do
+		local seenDropActivation = {}
+		for _, candidate in ipairs(descendants) do
 			if #data.drops >= context.CONFIG.maxDrops then
-				return
+				break
 			end
-			if candidate.Parent
-				and not seenDrops[candidate]
-				and not isBlockedInteraction(candidate)
-				and not hasAncestorNamed(candidate, root, PURCHASE_CONTAINER_WORDS) then
+
+			if hasAny(candidate.Name, COLLECTOR_WORDS)
+				and not isPurchaseContainer(candidate)
+				and not hasAncestorNamed(candidate, root, PURCHASE_CONTAINER_WORDS)
+				and not isBlockedInteraction(candidate) then
 				local touchPart, prompt, clickDetector = getInteraction(candidate)
-				if touchPart or prompt or clickDetector then
-					seenDrops[candidate] = true
+				local activationKey = touchPart or prompt or clickDetector
+				if activationKey and not seenDropActivation[activationKey] then
+					seenDropActivation[activationKey] = true
 					table.insert(data.drops, {
 						object = candidate,
 						part = getReferencePart(candidate),
@@ -728,58 +736,7 @@ return function()
 		end
 	end
 
-	local function collectCandidates(root, data, context)
-		local seenButtons = {}
-		scanPurchaseContainers(root, data, context, seenButtons)
-		scanInteractionFallback(root, data, context, seenButtons)
-		scanCollectors(root, data, context)
-	end
-
-	local function scan(context)
-		local roots = findTycoonRoots(context)
-		local selected = roots[1]
-		local ownerVerified = selected and selected.ownerVerified or false
-		local automationAllowed = ownerVerified or context.CONFIG.requireOwnerMatch == false
-
-		local data = {
-			root = selected and selected.root or workspace,
-			rootName = selected and selected.root.Name or "Workspace",
-			confidence = selected and math.clamp(selected.rawScore * 7 + (ownerVerified and 30 or 0), 0, 100) or 0,
-			rootScore = selected and selected.rawScore or 0,
-			ownerMatch = ownerVerified,
-			ownerVerified = ownerVerified,
-			ownerSource = ownerVerified and "owner" or (selected and selected.inside and "position" or "structure"),
-			selectedByPosition = selected and selected.inside or false,
-			automationAllowed = automationAllowed,
-			buttons = {},
-			drops = {},
-			cash = tonumber(context.getCash()) or 0,
-			owned = ownerVerified,
-			maxLabels = context.CONFIG.maxLabels or 16,
-			paidSkipped = 0,
-		}
-		data.safeAutomation = automationAllowed
-
-		if not selected then
-			data.affordableCount = 0
-			data.lockedCount = 0
-			data.totalButtons = 0
-			data.progressPercent = 0
-			data.debug = "no tycoon root detected"
-			return data
-		end
-
-		if context.CONFIG.requireOwnerMatch and not ownerVerified then
-			data.affordableCount = 0
-			data.lockedCount = 0
-			data.totalButtons = 0
-			data.progressPercent = 0
-			data.debug = string.format("%s | owner unverified | automation blocked", data.rootName)
-			return data
-		end
-
-		collectCandidates(data.root, data, context)
-
+	local function finaliseData(data)
 		local affordable = 0
 		local locked = 0
 		for _, button in ipairs(data.buttons) do
@@ -802,19 +759,137 @@ return function()
 		data.totalButtons = #data.buttons
 		data.progressPercent = 0
 		data.debug = string.format(
-			"%s | owner %s:%s | blocked %d | buttons %d | drops %d",
+			"%s | owner %s:%s | skipped %d | buttons %d | drops %d | %s %.1fms",
 			data.rootName,
-			ownerVerified and "yes" or "no",
+			data.ownerVerified and "yes" or "no",
 			data.ownerSource,
 			data.paidSkipped,
 			#data.buttons,
-			#data.drops
+			#data.drops,
+			data.scanMode or "scan",
+			data.scanTimeMs or 0
 		)
 		return data
+	end
+
+	local function scanRoot(context, root, ownerHint, scanMode, rawScore)
+		local started = os.clock()
+		local descendants = root:GetDescendants()
+		local ownerVerified = rootHasVerifiedOwner(context, root, descendants)
+		if ownerHint == true and not ownerVerified then
+			ownerVerified = false
+		end
+
+		local automationAllowed = ownerVerified or context.CONFIG.requireOwnerMatch == false
+		local data = {
+			root = root,
+			rootName = root.Name,
+			confidence = math.clamp((rawScore or structureScore(root)) * 7 + (ownerVerified and 30 or 0), 0, 100),
+			rootScore = rawScore or structureScore(root),
+			ownerMatch = ownerVerified,
+			ownerVerified = ownerVerified,
+			ownerSource = ownerVerified and "owner" or "structure",
+			selectedByPosition = false,
+			automationAllowed = automationAllowed,
+			buttons = {},
+			drops = {},
+			cash = tonumber(context.getCash()) or 0,
+			owned = ownerVerified,
+			maxLabels = context.CONFIG.maxLabels or 16,
+			paidSkipped = 0,
+			scanMode = scanMode or "root",
+		}
+		data.safeAutomation = automationAllowed
+
+		if context.CONFIG.requireOwnerMatch and not ownerVerified then
+			data.scanTimeMs = (os.clock() - started) * 1000
+			data.affordableCount = 0
+			data.lockedCount = 0
+			data.totalButtons = 0
+			data.progressPercent = 0
+			data.debug = string.format("%s | owner unverified | automation blocked | %s %.1fms", data.rootName, data.scanMode, data.scanTimeMs)
+			return data
+		end
+
+		collectCandidates(root, descendants, data, context)
+		data.scanTimeMs = (os.clock() - started) * 1000
+		return finaliseData(data)
+	end
+
+	local function fullScan(context)
+		local started = os.clock()
+		local roots = findTycoonRoots(context)
+		local selected = roots[1]
+
+		if not selected then
+			knownRoot = nil
+			knownOwnerMisses = 0
+			return {
+				root = workspace,
+				rootName = "Workspace",
+				confidence = 0,
+				rootScore = 0,
+				ownerMatch = false,
+				ownerVerified = false,
+				ownerSource = "none",
+				automationAllowed = context.CONFIG.requireOwnerMatch == false,
+				safeAutomation = context.CONFIG.requireOwnerMatch == false,
+				buttons = {},
+				drops = {},
+				cash = tonumber(context.getCash()) or 0,
+				owned = false,
+				maxLabels = context.CONFIG.maxLabels or 16,
+				paidSkipped = 0,
+				affordableCount = 0,
+				lockedCount = 0,
+				totalButtons = 0,
+				progressPercent = 0,
+				scanMode = "discovery",
+				scanTimeMs = (os.clock() - started) * 1000,
+				debug = "no tycoon root detected",
+			}
+		end
+
+		knownRoot = selected.root
+		knownOwnerMisses = 0
+		local data = scanRoot(context, selected.root, selected.ownerVerified, "discovery", selected.rawScore)
+		data.selectedByPosition = selected.inside or false
+		if not data.ownerVerified and selected.inside then
+			data.ownerSource = "position"
+		end
+		return data
+	end
+
+	local function scan(context)
+		if knownRoot and knownRoot.Parent then
+			local data = scanRoot(context, knownRoot, true, "cached-root")
+			if data.ownerVerified or context.CONFIG.requireOwnerMatch == false then
+				knownOwnerMisses = 0
+				return data
+			end
+
+			knownOwnerMisses = knownOwnerMisses + 1
+			if knownOwnerMisses < 2 then
+				return data
+			end
+
+			knownRoot = nil
+			knownOwnerMisses = 0
+		end
+
+		return fullScan(context)
+	end
+
+	local function invalidateRoot(root)
+		if not root or root == knownRoot then
+			knownRoot = nil
+			knownOwnerMisses = 0
+		end
 	end
 
 	return {
 		scan = scan,
 		parseCompactNumber = parseCompactNumber,
+		invalidateRoot = invalidateRoot,
 	}
 end
