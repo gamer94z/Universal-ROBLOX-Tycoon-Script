@@ -1,5 +1,6 @@
 return function(context)
 	local LOCAL_PLAYER = context.LOCAL_PLAYER
+	local CONFIG = context.CONFIG
 
 	local REBIRTH_WORDS = { "rebirth", "prestige", "ascend", "restart tycoon", "reset tycoon" }
 	local BLOCKED_WORDS = { "robux", "gamepass", "game pass", "premium", "developer product", "watch ad", "video ad", "rewarded ad" }
@@ -32,26 +33,50 @@ return function(context)
 		return false
 	end
 
-	local function getBuyInterval(data)
-		if not data or not data.buttons then return 0.8 end
-		local affordable = 0
-		for _, button in ipairs(data.buttons) do
+	local function affordableCount(data)
+		local count = 0
+		for _, button in ipairs(data and data.buttons or {}) do
 			if button.affordable and not button.paidPurchase
 				and not (button.blockedUntil and button.blockedUntil > os.clock()) then
-				affordable = affordable + 1
+				count = count + 1
 			end
 		end
-		if affordable >= 6 then return 0.12 end
-		if affordable >= 3 then return 0.18 end
-		if affordable >= 1 then return 0.28 end
-		return 0.7
+		return count
 	end
 
-	local function getCollectInterval(data)
-		if not data or not data.drops then return 1 end
-		if #data.drops >= 15 then return 0.18 end
-		if #data.drops >= 5 then return 0.3 end
-		return 0.5
+	local function getBuyInterval(data, brainStatus)
+		local affordable = affordableCount(data)
+		if affordable == 0 then return 0.65 end
+
+		local strategy = (brainStatus and brainStatus.strategy) or CONFIG.strategy or "Fastest"
+		local bottleneck = brainStatus and brainStatus.bottleneck
+		if bottleneck == "interaction failures" then return 0.55 end
+
+		if strategy == "Rebirth" then
+			if affordable >= 5 then return 0.09 end
+			if affordable >= 2 then return 0.13 end
+			return 0.2
+		elseif strategy == "Income" then
+			if affordable >= 5 then return 0.11 end
+			if affordable >= 2 then return 0.16 end
+			return 0.24
+		end
+
+		if affordable >= 6 then return 0.09 end
+		if affordable >= 3 then return 0.14 end
+		return 0.22
+	end
+
+	local function getCollectInterval(data, brainStatus)
+		local drops = #(data and data.drops or {})
+		if drops == 0 then return 1 end
+		local bottleneck = brainStatus and brainStatus.bottleneck
+		if bottleneck == "waiting for collector" or bottleneck == "waiting for cash" then
+			return drops >= 6 and 0.12 or 0.18
+		end
+		if drops >= 15 then return 0.2 end
+		if drops >= 5 then return 0.3 end
+		return 0.48
 	end
 
 	local function resetRunClock()
@@ -111,9 +136,7 @@ return function(context)
 					local current = descendant.Parent
 					local depth = 0
 					while current and current ~= root and depth < 3 do
-						if rebirthLooksSafe(current) then
-							return { interaction = descendant, host = current }
-						end
+						if rebirthLooksSafe(current) then return { interaction = descendant, host = current } end
 						current = current.Parent
 						depth = depth + 1
 					end
@@ -140,14 +163,20 @@ return function(context)
 		elseif interaction:IsA("ClickDetector") and type(fireclickdetector) == "function" then
 			return pcall(function() fireclickdetector(interaction) end)
 		elseif interaction:IsA("TouchTransmitter") and type(firetouchinterest) == "function" then
-			local root = context.getLocalRoot()
+			local character = LOCAL_PLAYER.Character
+			local actor = character and (character:FindFirstChild("LeftFoot") or character:FindFirstChild("Left Leg") or character:FindFirstChild("HumanoidRootPart"))
 			local part = interaction.Parent
-			if root and part and part:IsA("BasePart") then
-				return pcall(function()
-					firetouchinterest(root, part, 0)
+			if actor and part and part:IsA("BasePart") then
+				local oldCollide = part.CanCollide
+				local ok = pcall(function()
+					part.CanCollide = false
+					firetouchinterest(actor, part, 0)
 					waitStep(0.03)
-					firetouchinterest(root, part, 1)
+					firetouchinterest(actor, part, 1)
+					part.CanCollide = oldCollide
 				end)
+				pcall(function() if part and part.Parent then part.CanCollide = oldCollide end end)
+				return ok
 			end
 		elseif candidate.gui and type(firesignal) == "function" then
 			return pcall(function() firesignal(interaction.MouseButton1Click) end)
