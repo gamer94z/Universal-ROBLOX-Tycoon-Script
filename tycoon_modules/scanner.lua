@@ -85,6 +85,10 @@ return function()
 		return tostring(text or ""):lower()
 	end
 
+	local function trim(text)
+		return tostring(text or ""):match("^%s*(.-)%s*$")
+	end
+
 	local function hasAny(text, words)
 		text = lower(text)
 		for _, word in ipairs(words) do
@@ -279,6 +283,14 @@ return function()
 				return descendant
 			end
 		end
+
+		local current = object.Parent
+		while current and current ~= workspace do
+			if current:IsA("BasePart") then
+				return current
+			end
+			current = current.Parent
+		end
 		return nil
 	end
 
@@ -354,6 +366,21 @@ return function()
 		return candidates
 	end
 
+	local function hasOwnerAttribute(object)
+		local ok, attributes = pcall(function()
+			return object:GetAttributes()
+		end)
+		if not ok or type(attributes) ~= "table" then
+			return false
+		end
+		for key in pairs(attributes) do
+			if lower(key):find("owner", 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
 	local function getLocalStructureScore(object)
 		if not isContainer(object) then
 			return 0
@@ -365,15 +392,39 @@ return function()
 		if name:find("base", 1, true) then score = score + 4 end
 		if name:find("plot", 1, true) then score = score + 4 end
 		if name:find("factory", 1, true) then score = score + 3 end
+		if hasOwnerAttribute(object) then score = score + 7 end
+
+		local directPurchase = false
+		local directPurchased = false
+		local directDrops = false
+		local directOwner = false
+		local nearbyPurchase = false
+		local nearbyPurchased = false
+		local nearbyDrops = false
+		local nearbyOwner = false
 
 		for _, child in ipairs(object:GetChildren()) do
 			local childName = lower(child.Name)
-			if isPurchaseContainer(child) then score = score + 9 end
-			if childName:find("purchasedobjects", 1, true) or childName == "purchased" then score = score + 5 end
-			if childName:find("drops", 1, true) or childName:find("collector", 1, true) then score = score + 4 end
-			if childName:find("owner", 1, true) then score = score + 7 end
+			if isPurchaseContainer(child) then directPurchase = true end
+			if childName:find("purchasedobjects", 1, true) or childName == "purchased" then directPurchased = true end
+			if childName:find("drops", 1, true) or childName:find("collector", 1, true) then directDrops = true end
+			if childName:find("owner", 1, true) or hasOwnerAttribute(child) then directOwner = true end
+
+			if isContainer(child) then
+				for _, grandchild in ipairs(child:GetChildren()) do
+					local grandchildName = lower(grandchild.Name)
+					if isPurchaseContainer(grandchild) then nearbyPurchase = true end
+					if grandchildName:find("purchasedobjects", 1, true) or grandchildName == "purchased" then nearbyPurchased = true end
+					if grandchildName:find("drops", 1, true) or grandchildName:find("collector", 1, true) then nearbyDrops = true end
+					if grandchildName:find("owner", 1, true) or hasOwnerAttribute(grandchild) then nearbyOwner = true end
+				end
+			end
 		end
 
+		if directPurchase then score = score + 9 elseif nearbyPurchase then score = score + 7 end
+		if directPurchased then score = score + 5 elseif nearbyPurchased then score = score + 3 end
+		if directDrops then score = score + 4 elseif nearbyDrops then score = score + 2 end
+		if directOwner then score = score + 7 elseif nearbyOwner then score = score + 4 end
 		return score
 	end
 
@@ -392,7 +443,31 @@ return function()
 		end
 	end
 
+	local function ownerValueMatches(context, value)
+		if type(value) == "number" then
+			return tonumber(value) == context.LOCAL_PLAYER.UserId
+		end
+		if type(value) == "string" then
+			local clean = lower(trim(value))
+			return clean == lower(context.LOCAL_PLAYER.Name)
+				or clean == lower(context.LOCAL_PLAYER.DisplayName)
+				or tonumber(clean) == context.LOCAL_PLAYER.UserId
+		end
+		return false
+	end
+
 	local function ownerSignalMatches(context, object)
+		local ok, attributes = pcall(function()
+			return object:GetAttributes()
+		end)
+		if ok and type(attributes) == "table" then
+			for key, value in pairs(attributes) do
+				if lower(key):find("owner", 1, true) and ownerValueMatches(context, value) then
+					return true
+				end
+			end
+		end
+
 		local name = lower(object.Name)
 		local parentName = object.Parent and lower(object.Parent.Name) or ""
 		if not name:find("owner", 1, true) and not parentName:find("owner", 1, true) then
@@ -404,8 +479,7 @@ return function()
 		if object:IsA("ObjectValue") then
 			return object.Value == context.LOCAL_PLAYER
 		elseif object:IsA("StringValue") then
-			local value = lower(object.Value)
-			return value == playerName or value == displayName
+			return ownerValueMatches(context, object.Value)
 		elseif object:IsA("IntValue") or object:IsA("NumberValue") then
 			return tonumber(object.Value) == context.LOCAL_PLAYER.UserId
 		elseif object:IsA("TextLabel") or object:IsA("TextButton") then
@@ -424,7 +498,7 @@ return function()
 
 		for _, descendant in ipairs(workspace:GetDescendants()) do
 			if ownerSignalMatches(context, descendant) then
-				local current = descendant.Parent
+				local current = descendant
 				while current and current ~= workspace do
 					local candidate = candidateByRoot[current]
 					if candidate then
