@@ -1,9 +1,8 @@
 -- Performance-hardening scanner wrapper.
--- Adds a second-stage GUI-aware currency resolver on top of the structural,
--- ownership-aware hardening scanner. This keeps purchase affordability safe
--- while supporting tycoons that expose the spendable balance only in PlayerGui.
+-- Adds an adaptive HUD currency resolver on top of the structural hardening scanner.
+-- It can learn anonymous numeric wallet counters without mistaking rates/prices/ammo for cash.
 
-local BASE_URL = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/9cf3977bd4954337dd0f30d56d852fceb75ff95f/tycoon_modules/scanner.lua"
+local BASE_URL = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/87237a049e9cb6804265bda54d04c9d7605a1d0b/tycoon_modules/scanner.lua"
 
 return function(context)
 	local source = game:HttpGet(BASE_URL)
@@ -12,66 +11,19 @@ return function(context)
 	local factory = chunk()
 	if type(factory) ~= "function" then return nil end
 
-	-- The base factory installs the structural scanner, generic ownership rules,
-	-- and Value/attribute currency discovery first.
 	local base = factory(context)
 	if type(base) ~= "table" or type(base.scan) ~= "function" then return nil end
 
 	local previousGetCash = context.getCash
-	local guiSource
-	local guiSourceScore = 0
-	local lastGuiSearch = -math.huge
-	local GUI_SEARCH_COOLDOWN = 2.0
-	local MAX_GUI_INSPECT = 520
+	local selected
+	local selectedScore = 0
+	local observations = setmetatable({}, { __mode = "k" })
+	local lastSearch = -math.huge
+	local SEARCH_COOLDOWN = 1.5
+	local MAX_GUI_INSPECT = 420
+	local lastPrintedSource
 
-	local function lower(value)
-		return tostring(value or ""):lower()
-	end
-
-	local function clean(value)
-		return lower(value):gsub("[^%w]", "")
-	end
-
-	local function parseCompactNumber(value)
-		if type(value) == "number" then return value >= 0 and value or nil end
-		local text = lower(value):gsub(",", ""):gsub("_", " ")
-		local scientific = text:match("([%d%.]+e[%+%-]?%d+)")
-		if scientific then
-			local n = tonumber(scientific)
-			if n and n >= 0 then return n end
-		end
-		local numberText, suffix = text:match("([%d]+%.?[%d]*)%s*([kmbtq])")
-		if not numberText then
-			numberText = text:match("([%d]+%.?[%d]*)")
-			suffix = ""
-		end
-		local n = tonumber(numberText)
-		if not n or n < 0 then return nil end
-		local multiplier = 1
-		if suffix == "k" or text:find("thousand", 1, true) then multiplier = 1e3
-		elseif suffix == "m" or text:find("million", 1, true) then multiplier = 1e6
-		elseif suffix == "b" or text:find("billion", 1, true) then multiplier = 1e9
-		elseif suffix == "t" or text:find("trillion", 1, true) then multiplier = 1e12
-		elseif suffix == "q" or text:find("quadrillion", 1, true) then multiplier = 1e15
-		elseif text:find("quintillion", 1, true) then multiplier = 1e18 end
-		return n * multiplier
-	end
-
-	local RATE_WORDS = {
-		"/s", "/sec", "per sec", "per second", "income", "rate", "cash/sec",
-		"money/sec", "coins/sec", "cps", "dps", "rpm",
-	}
-	local PRICE_WORDS = {
-		"cost", "price", "buy", "purchase", "upgrade", "unlock", "locked",
-		"required", "requirement", "shop", "store", "gamepass", "premium", "robux",
-		"reward", "rebirth", "prestige",
-	}
-	local NON_CASH_WORDS = {
-		"gem", "diamond", "crystal", "token", "ticket", "star", "xp", "level",
-	}
-	local CASH_STRONG = { "cash", "money", "balance", "wallet", "fund" }
-	local CASH_WEAK = { "coin", "credit", "currency", "gold" }
-
+	local function lower(value) return tostring(value or ""):lower() end
 	local function hasAny(text, words)
 		text = lower(text)
 		for _, word in ipairs(words) do
@@ -80,7 +32,40 @@ return function(context)
 		return false
 	end
 
-	local function guiVisible(object)
+	local RATE_WORDS = { "/s", "/sec", "per sec", "per second", "income", "rate", "cash/sec", "money/sec", "cps", "dps", "rpm" }
+	local PRICE_WORDS = { "cost", "price", "buy", "purchase", "upgrade", "unlock", "locked", "shop", "store", "gamepass", "premium", "robux", "rebirth", "prestige" }
+	local NON_CASH_WORDS = {
+		"gem", "diamond", "crystal", "token", "ticket", "star", "xp", "level",
+		"ammo", "bullet", "magazine", "weapon", "hotbar", "inventory", "health", "hp",
+		"kills", "deaths", "timer", "timeleft", "countdown", "players", "playerlist",
+		"leaderboard", "ping", "fps", "streak", "round", "wave"
+	}
+	local CASH_STRONG = { "cash", "money", "balance", "wallet", "fund" }
+	local CASH_WEAK = { "coin", "credit", "currency", "gold" }
+
+	local function parseCompactNumber(value)
+		if type(value) == "number" then return value >= 0 and value or nil end
+		local text = lower(value):gsub(",", ""):gsub("_", " ")
+		if hasAny(text, RATE_WORDS) or text:find("%%", 1, true) then return nil end
+		local scientific = text:match("([%d%.]+e[%+%-]?%d+)")
+		if scientific then
+			local n = tonumber(scientific)
+			if n and n >= 0 then return n end
+		end
+		local numberText, suffix = text:match("([%d]+%.?[%d]*)%s*([kmbtq])")
+		if not numberText then numberText = text:match("([%d]+%.?[%d]*)"); suffix = "" end
+		local n = tonumber(numberText)
+		if not n or n < 0 then return nil end
+		local mult = 1
+		if suffix == "k" or text:find("thousand",1,true) then mult = 1e3
+		elseif suffix == "m" or text:find("million",1,true) then mult = 1e6
+		elseif suffix == "b" or text:find("billion",1,true) then mult = 1e9
+		elseif suffix == "t" or text:find("trillion",1,true) then mult = 1e12
+		elseif suffix == "q" or text:find("quadrillion",1,true) then mult = 1e15 end
+		return n * mult
+	end
+
+	local function visible(object)
 		local current = object
 		local depth = 0
 		while current and depth <= 8 do
@@ -92,11 +77,11 @@ return function(context)
 		return true
 	end
 
-	local function ancestorContext(object)
+	local function contextText(object)
 		local pieces = {}
 		local current = object
 		local depth = 0
-		while current and depth <= 5 do
+		while current and depth <= 6 do
 			table.insert(pieces, tostring(current.Name or ""))
 			current = current.Parent
 			depth = depth + 1
@@ -104,113 +89,144 @@ return function(context)
 		return lower(table.concat(pieces, " "))
 	end
 
-	local function candidateScore(object)
-		if not object or not object.Parent then return nil, nil end
-		if not (object:IsA("TextLabel") or object:IsA("TextButton")) then return nil, nil end
-		if not guiVisible(object) then return nil, nil end
+	local function hasImageSibling(object)
+		local parent = object and object.Parent
+		if not parent then return false end
+		for _, child in ipairs(parent:GetChildren()) do
+			if child ~= object and (child:IsA("ImageLabel") or child:IsA("ImageButton")) and child.Visible ~= false then
+				return true
+			end
+		end
+		return false
+	end
 
+	local function greenDominant(object)
+		local ok, colour = pcall(function() return object.TextColor3 end)
+		if not ok or not colour then return false end
+		return colour.G > colour.R * 1.18 and colour.G > colour.B * 1.12 and colour.G > 0.45
+	end
+
+	local function updateObservation(object, value)
+		local now = os.clock()
+		local obs = observations[object]
+		if not obs then
+			obs = { value = value, changes = 0, upward = 0, downward = 0, lastChange = -math.huge }
+			observations[object] = obs
+			return obs
+		end
+		if value ~= obs.value then
+			obs.changes = math.min(8, obs.changes + 1)
+			if value > obs.value then obs.upward = math.min(8, obs.upward + 1)
+			elseif value < obs.value then obs.downward = math.min(8, obs.downward + 1) end
+			obs.value = value
+			obs.lastChange = now
+		end
+		return obs
+	end
+
+	local function scoreCandidate(object)
+		if not object or not object.Parent or not (object:IsA("TextLabel") or object:IsA("TextButton")) or not visible(object) then return nil end
 		local text = tostring(object.Text or "")
 		local lowered = lower(text)
-		if lowered == "" or hasAny(lowered, RATE_WORDS) or hasAny(lowered, PRICE_WORDS) then return nil, nil end
-		if lowered:find("%%", 1, true) then return nil, nil end
-
+		if lowered == "" or hasAny(lowered, RATE_WORDS) or hasAny(lowered, PRICE_WORDS) then return nil end
 		local value = parseCompactNumber(text)
-		if value == nil then return nil, nil end
+		if value == nil then return nil end
 
-		local contextText = ancestorContext(object)
-		if hasAny(contextText, RATE_WORDS) or hasAny(contextText, PRICE_WORDS) then return nil, nil end
-		if hasAny(contextText, NON_CASH_WORDS) and not hasAny(contextText, CASH_STRONG) then return nil, nil end
+		local ctx = contextText(object)
+		if hasAny(ctx, RATE_WORDS) or hasAny(ctx, PRICE_WORDS) or hasAny(ctx, NON_CASH_WORDS) then return nil end
 
 		local score = 0
-		local objectName = lower(object.Name)
-		local hasCurrencySymbol = lowered:find("$", 1, true) ~= nil
-			or lowered:find("£", 1, true) ~= nil
-			or lowered:find("€", 1, true) ~= nil
-			or lowered:find("¥", 1, true) ~= nil
+		local name = lower(object.Name)
+		local symbol = lowered:find("$",1,true) or lowered:find("£",1,true) or lowered:find("€",1,true) or lowered:find("¥",1,true)
+		if symbol then score = score + 45 end
+		if hasAny(name, CASH_STRONG) then score = score + 100 elseif hasAny(name, CASH_WEAK) then score = score + 48 end
+		if hasAny(ctx, CASH_STRONG) then score = score + 90 elseif hasAny(ctx, CASH_WEAK) then score = score + 42 end
 
-		if hasCurrencySymbol then score = score + 35 end
-		if hasAny(objectName, CASH_STRONG) then score = score + 85
-		elseif hasAny(objectName, CASH_WEAK) then score = score + 45 end
-		if hasAny(contextText, CASH_STRONG) then score = score + 75
-		elseif hasAny(contextText, CASH_WEAK) then score = score + 35 end
+		local imageSibling = hasImageSibling(object)
+		if imageSibling then score = score + 24 end
+		if greenDominant(object) then score = score + 24 end
 
-		-- Bare numeric labels are only accepted when their UI ancestry strongly
-		-- identifies them as the player's wallet/balance display.
-		if not hasCurrencySymbol and not hasAny(contextText, CASH_STRONG) and not hasAny(objectName, CASH_STRONG) then
-			return nil, nil
+		local bare = lowered:match("^%s*[%d][%d,%.]*%s*[kmbtq]?%s*$") ~= nil
+		if bare then score = score + 8 end
+
+		local obs = updateObservation(object, value)
+		if obs.changes > 0 then score = score + math.min(60, obs.changes * 15) end
+		if obs.upward > 0 then score = score + math.min(45, obs.upward * 15) end
+		if os.clock() - obs.lastChange <= 4 then score = score + 25 end
+
+		-- Anonymous bare counters need at least two HUD-like clues or observed activity.
+		if not symbol and not hasAny(name, CASH_STRONG) and not hasAny(ctx, CASH_STRONG) then
+			local plausible = (imageSibling and greenDominant(object)) or obs.changes > 0
+			if not plausible then return nil end
 		end
-		if score < 70 then return nil, nil end
-		return score, value
+
+		if score < 45 then return nil end
+		return { object = object, value = value, score = score }
 	end
 
-	local function readGuiSource()
-		if not guiSource or not guiSource.Parent then return nil end
-		local score, value = candidateScore(guiSource)
-		if not score then
-			guiSource = nil
-			guiSourceScore = 0
-			return nil
-		end
-		guiSourceScore = score
-		return value
-	end
-
-	local function findGuiSource()
-		local player = context.LOCAL_PLAYER
-		local playerGui = player and player:FindFirstChildOfClass("PlayerGui")
+	local function scanGui()
+		local playerGui = context.LOCAL_PLAYER and context.LOCAL_PLAYER:FindFirstChildOfClass("PlayerGui")
 		if not playerGui then return nil end
-
-		local bestObject, bestScore, bestValue
+		local best
 		local queue = { playerGui }
 		local cursor = 1
 		local inspected = 0
 		while cursor <= #queue and inspected < MAX_GUI_INSPECT do
 			local current = queue[cursor]
 			cursor = cursor + 1
-			local score, value = candidateScore(current)
-			if score and (not bestScore or score > bestScore or (score == bestScore and value > (bestValue or -1))) then
-				bestObject, bestScore, bestValue = current, score, value
-			end
+			local candidate = scoreCandidate(current)
+			if candidate and (not best or candidate.score > best.score or (candidate.score == best.score and candidate.value > best.value)) then best = candidate end
 			for _, child in ipairs(current:GetChildren()) do
 				inspected = inspected + 1
 				if inspected <= MAX_GUI_INSPECT then table.insert(queue, child) end
 				if inspected >= MAX_GUI_INSPECT then break end
 			end
 		end
-		guiSource = bestObject
-		guiSourceScore = bestScore or 0
-		return bestValue
+		if best then selected = best.object; selectedScore = best.score end
+		return best and best.value or nil
 	end
 
-	local function safePreviousCash()
+	local function readSelected()
+		if not selected or not selected.Parent then selected = nil; selectedScore = 0; return nil end
+		local candidate = scoreCandidate(selected)
+		if not candidate then selected = nil; selectedScore = 0; return nil end
+		selectedScore = candidate.score
+		return candidate.value
+	end
+
+	local function previousCash()
 		if type(previousGetCash) ~= "function" then return nil end
 		local ok, value = pcall(previousGetCash)
 		return ok and tonumber(value) or nil
 	end
 
-	local function finalGetCash()
-		local guiValue = readGuiSource()
-		local previousValue = safePreviousCash()
-
+	local function adaptiveGetCash()
+		local oldValue = previousCash()
+		local guiValue = readSelected()
 		local now = os.clock()
-		if guiValue == nil and now - lastGuiSearch >= GUI_SEARCH_COOLDOWN then
-			lastGuiSearch = now
-			guiValue = findGuiSource()
+		if (guiValue == nil or (oldValue == 0 and guiValue == 0)) and now - lastSearch >= SEARCH_COOLDOWN then
+			lastSearch = now
+			guiValue = scanGui()
 		end
 
-		-- A high-confidence wallet label wins over a stale/ambiguous zero Value.
-		-- Otherwise retain the normal player-data source when it is usable.
-		if guiValue ~= nil and guiSourceScore >= 100 then return guiValue end
-		if previousValue ~= nil and previousValue > 0 then return previousValue end
-		if guiValue ~= nil then return guiValue end
-		return previousValue
+		local chosen
+		if guiValue ~= nil and selectedScore >= 90 then chosen = guiValue
+		elseif oldValue ~= nil and oldValue > 0 then chosen = oldValue
+		elseif guiValue ~= nil and guiValue > 0 and selectedScore >= 45 then chosen = guiValue
+		else chosen = oldValue or guiValue end
+
+		if selected and selected ~= lastPrintedSource and chosen == guiValue then
+			lastPrintedSource = selected
+			print("[0xVyrs Tycoon] cash source -> " .. selected:GetFullName() .. " = " .. tostring(guiValue))
+		end
+		return chosen
 	end
 
-	context.getCash = finalGetCash
+	context.getCash = adaptiveGetCash
 
 	local function syncCash(data)
 		if not data then return data end
-		local cash = tonumber(finalGetCash())
+		local cash = tonumber(adaptiveGetCash())
 		if cash == nil then return data end
 		data.cash = cash
 		local affordable, locked = 0, 0
@@ -227,15 +243,14 @@ return function(context)
 		data.affordableCount = affordable
 		data.lockedCount = locked
 		if data.debug then
-			data.debug.guiCurrencySource = guiSource and guiSource:GetFullName() or nil
-			data.debug.guiCurrencyScore = guiSourceScore
+			data.debug.guiCurrencySource = selected and selected:GetFullName() or nil
+			data.debug.guiCurrencyScore = selectedScore
 		end
 		return data
 	end
 
 	local function scan(scanContext)
-		local data = base.scan(scanContext or context)
-		return syncCash(data)
+		return syncCash(base.scan(scanContext or context))
 	end
 
 	return {
