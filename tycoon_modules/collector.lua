@@ -123,8 +123,6 @@ return function()
 			end
 		end
 
-		-- Some games keep the interaction inside a Primary/Pad part while the
-		-- identifying text is on the immediately surrounding purchase model.
 		local parent = object.Parent
 		if parent and parent ~= workspace and not isGenericPurchaseContainer(parent) then
 			if instanceLooksBlocked(parent) then
@@ -251,8 +249,6 @@ return function()
 			local modeAllows = context.CONFIG.collectMode ~= "Collectors"
 				or tostring(drop.name or ""):lower():find("collect", 1, true) ~= nil
 
-			-- Collection must never move the player's character. Virtual touch,
-			-- prompt and click activation are used even when purchase mode is Teleport.
 			if inRange and modeAllows and activateEntry(context, root, drop, false) then
 				collected = collected + 1
 			end
@@ -262,9 +258,17 @@ return function()
 	end
 
 	local function buyButton(context, button)
-		if not button or button.automationAllowed ~= true or purchaseLooksBlocked(button) then
+		if not button or button.automationAllowed ~= true then
 			return false
 		end
+		if purchaseLooksBlocked(button) then
+			-- Keep this result out of subsequent target selection until the next scan.
+			button.paidPurchase = true
+			button.affordable = false
+			button.locked = false
+			return false
+		end
+
 		local root = context.getLocalRoot()
 		if not root then
 			return false
