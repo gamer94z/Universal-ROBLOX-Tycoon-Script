@@ -1,6 +1,8 @@
 return function()
-	local CACHE_TTL = 20
+	local CACHE_TTL = 15
 	local MAX_ROOT_DEPTH = 5
+	local MAX_INTERACTION_PARENT_DEPTH = 2
+
 	local cache = {
 		purchaseContainers = {},
 		collectorCandidates = {},
@@ -13,6 +15,25 @@ return function()
 		amount = true,
 		cash = true,
 		money = true,
+	}
+
+	local PURCHASE_CONTAINER_WORDS = {
+		"buttons",
+		"button",
+		"buybuttons",
+		"purchasebuttons",
+		"pads",
+		"purchasepads",
+		"buyitems",
+		"buy pads",
+	}
+
+	local COLLECTOR_WORDS = {
+		"drop",
+		"cash",
+		"money",
+		"collect",
+		"collector",
 	}
 
 	local PAID_PURCHASE_WORDS = {
@@ -62,35 +83,16 @@ return function()
 		"robux",
 	}
 
-	local PURCHASE_CONTAINER_WORDS = {
-		"buttons",
-		"button",
-		"buybuttons",
-		"purchasebuttons",
-		"pads",
-		"purchasepads",
-		"buyitems",
-		"buy pads",
-	}
-
-	local COLLECTOR_WORDS = {
-		"drop",
-		"cash",
-		"money",
-		"collect",
-		"collector",
-	}
-
-	local function lower(text)
-		return tostring(text or ""):lower()
+	local function lower(value)
+		return tostring(value or ""):lower()
 	end
 
-	local function trim(text)
-		return tostring(text or ""):match("^%s*(.-)%s*$")
+	local function trim(value)
+		return tostring(value or ""):match("^%s*(.-)%s*$")
 	end
 
-	local function hasAny(text, words)
-		text = lower(text)
+	local function hasAny(value, words)
+		local text = lower(value)
 		for _, word in ipairs(words) do
 			if text:find(word, 1, true) then
 				return true
@@ -112,14 +114,14 @@ return function()
 
 	local function parseCompactNumber(value)
 		if type(value) == "number" then
-			return value > 0 and value or nil
+			return value >= 0 and value or nil
 		end
 
 		local text = lower(value):gsub(",", ""):gsub("_", " ")
 		local scientific = text:match("([%d%.]+[eE][%+%-]?%d+)")
 		if scientific then
 			local parsed = tonumber(scientific)
-			if parsed and parsed > 0 then
+			if parsed and parsed >= 0 then
 				return parsed
 			end
 		end
@@ -131,7 +133,7 @@ return function()
 		end
 
 		local number = tonumber(numberText)
-		if not number or number <= 0 then
+		if not number or number < 0 then
 			return nil
 		end
 
@@ -154,7 +156,8 @@ return function()
 	end
 
 	local function hasCashPriceText(text)
-		if not parseCompactNumber(text) then
+		local parsed = parseCompactNumber(text)
+		if parsed == nil then
 			return false
 		end
 
@@ -168,6 +171,76 @@ return function()
 			or clean:find("coin", 1, true) ~= nil
 			or clean:find("cost", 1, true) ~= nil
 			or clean:find("price", 1, true) ~= nil
+	end
+
+	local function getPriceAttribute(object)
+		local ok, attributes = pcall(function()
+			return object:GetAttributes()
+		end)
+		if not ok or type(attributes) ~= "table" then
+			return nil
+		end
+
+		for key, value in pairs(attributes) do
+			if isPriceName(key) then
+				local parsed = parseCompactNumber(value)
+				if parsed ~= nil then
+					return parsed
+				end
+			end
+		end
+		return nil
+	end
+
+	local function extractPrice(object)
+		if not object then
+			return nil
+		end
+
+		local attributePrice = getPriceAttribute(object)
+		if attributePrice ~= nil then
+			return attributePrice
+		end
+
+		if isPriceName(object.Name) and (object:IsA("IntValue") or object:IsA("NumberValue") or object:IsA("StringValue")) then
+			local direct = parseCompactNumber(object.Value)
+			if direct ~= nil then
+				return direct
+			end
+		end
+
+		if object:IsA("TextLabel") or object:IsA("TextButton") then
+			if hasCashPriceText(object.Text) then
+				return parseCompactNumber(object.Text)
+			end
+		end
+
+		for _, descendant in ipairs(object:GetDescendants()) do
+			local descendantAttributePrice = getPriceAttribute(descendant)
+			if descendantAttributePrice ~= nil then
+				return descendantAttributePrice
+			end
+
+			if isPriceName(descendant.Name)
+				and (descendant:IsA("IntValue") or descendant:IsA("NumberValue") or descendant:IsA("StringValue")) then
+				local parsed = parseCompactNumber(descendant.Value)
+				if parsed ~= nil then
+					return parsed
+				end
+			elseif descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+				if hasCashPriceText(descendant.Text) then
+					local parsed = parseCompactNumber(descendant.Text)
+					if parsed ~= nil then
+						return parsed
+					end
+				end
+			end
+		end
+
+		if hasCashPriceText(object.Name) then
+			return parseCompactNumber(object.Name)
+		end
+		return nil
 	end
 
 	local function hasAnyDescendantText(object, words)
@@ -194,50 +267,6 @@ return function()
 
 	local function isBlockedInteraction(object)
 		return isPaidPurchase(object) or hasAnyDescendantText(object, BLOCKED_INTERACTION_WORDS)
-	end
-
-	local function extractPrice(object)
-		if isPriceName(object.Name) and (object:IsA("IntValue") or object:IsA("NumberValue") or object:IsA("StringValue")) then
-			local direct = parseCompactNumber(object.Value)
-			if direct then
-				return direct
-			end
-		end
-
-		for _, descendant in ipairs(object:GetDescendants()) do
-			if isPriceName(descendant.Name) and (descendant:IsA("IntValue") or descendant:IsA("NumberValue") or descendant:IsA("StringValue")) then
-				local value = parseCompactNumber(descendant.Value)
-				if value then
-					return value
-				end
-			end
-			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-				if hasCashPriceText(descendant.Text) then
-					local value = parseCompactNumber(descendant.Text)
-					if value then
-						return value
-					end
-				end
-			end
-		end
-		return nil
-	end
-
-	local function hasExplicitPrice(object)
-		if isPriceName(object.Name) and (object:IsA("IntValue") or object:IsA("NumberValue") or object:IsA("StringValue")) then
-			return true
-		end
-		for _, descendant in ipairs(object:GetDescendants()) do
-			if isPriceName(descendant.Name) and (descendant:IsA("IntValue") or descendant:IsA("NumberValue") or descendant:IsA("StringValue")) then
-				return true
-			end
-			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-				if hasCashPriceText(descendant.Text) then
-					return true
-				end
-			end
-		end
-		return false
 	end
 
 	local function partHasTouchInterest(part)
@@ -267,33 +296,6 @@ return function()
 		return nil
 	end
 
-	local function getReferencePart(object)
-		local touchPart = getTouchPart(object)
-		if touchPart then
-			return touchPart
-		end
-		if object:IsA("BasePart") then
-			return object
-		end
-		if object:IsA("Model") and object.PrimaryPart then
-			return object.PrimaryPart
-		end
-		for _, descendant in ipairs(object:GetDescendants()) do
-			if descendant:IsA("BasePart") then
-				return descendant
-			end
-		end
-
-		local current = object.Parent
-		while current and current ~= workspace do
-			if current:IsA("BasePart") then
-				return current
-			end
-			current = current.Parent
-		end
-		return nil
-	end
-
 	local function getPrompt(object)
 		if object:IsA("ProximityPrompt") then
 			return object
@@ -315,6 +317,25 @@ return function()
 	local function hasActivation(object)
 		local touchPart, prompt, clickDetector = getInteraction(object)
 		return touchPart ~= nil or prompt ~= nil or clickDetector ~= nil
+	end
+
+	local function getReferencePart(object)
+		local touchPart = getTouchPart(object)
+		if touchPart then
+			return touchPart
+		end
+		if object:IsA("BasePart") then
+			return object
+		end
+		if object:IsA("Model") and object.PrimaryPart then
+			return object.PrimaryPart
+		end
+		for _, descendant in ipairs(object:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				return descendant
+			end
+		end
+		return nil
 	end
 
 	local function isPurchaseContainer(object)
@@ -381,7 +402,7 @@ return function()
 		return false
 	end
 
-	local function getLocalStructureScore(object)
+	local function structureScore(object)
 		if not isContainer(object) then
 			return 0
 		end
@@ -394,37 +415,14 @@ return function()
 		if name:find("factory", 1, true) then score = score + 3 end
 		if hasOwnerAttribute(object) then score = score + 7 end
 
-		local directPurchase = false
-		local directPurchased = false
-		local directDrops = false
-		local directOwner = false
-		local nearbyPurchase = false
-		local nearbyPurchased = false
-		local nearbyDrops = false
-		local nearbyOwner = false
-
 		for _, child in ipairs(object:GetChildren()) do
 			local childName = lower(child.Name)
-			if isPurchaseContainer(child) then directPurchase = true end
-			if childName:find("purchasedobjects", 1, true) or childName == "purchased" then directPurchased = true end
-			if childName:find("drops", 1, true) or childName:find("collector", 1, true) then directDrops = true end
-			if childName:find("owner", 1, true) or hasOwnerAttribute(child) then directOwner = true end
-
-			if isContainer(child) then
-				for _, grandchild in ipairs(child:GetChildren()) do
-					local grandchildName = lower(grandchild.Name)
-					if isPurchaseContainer(grandchild) then nearbyPurchase = true end
-					if grandchildName:find("purchasedobjects", 1, true) or grandchildName == "purchased" then nearbyPurchased = true end
-					if grandchildName:find("drops", 1, true) or grandchildName:find("collector", 1, true) then nearbyDrops = true end
-					if grandchildName:find("owner", 1, true) or hasOwnerAttribute(grandchild) then nearbyOwner = true end
-				end
-			end
+			if isPurchaseContainer(child) then score = score + 9 end
+			if childName:find("purchasedobjects", 1, true) or childName == "purchased" then score = score + 5 end
+			if childName:find("drops", 1, true) or childName:find("collector", 1, true) then score = score + 4 end
+			if childName:find("owner", 1, true) or hasOwnerAttribute(child) then score = score + 7 end
 		end
 
-		if directPurchase then score = score + 9 elseif nearbyPurchase then score = score + 7 end
-		if directPurchased then score = score + 5 elseif nearbyPurchased then score = score + 3 end
-		if directDrops then score = score + 4 elseif nearbyDrops then score = score + 2 end
-		if directOwner then score = score + 7 elseif nearbyOwner then score = score + 4 end
 		return score
 	end
 
@@ -434,7 +432,7 @@ return function()
 		end
 		for _, child in ipairs(parent:GetChildren()) do
 			if isContainer(child) then
-				local score = getLocalStructureScore(child)
+				local score = structureScore(child)
 				if score >= 7 then
 					table.insert(output, { root = child, rawScore = score })
 				end
@@ -474,8 +472,6 @@ return function()
 			return false
 		end
 
-		local playerName = lower(context.LOCAL_PLAYER.Name)
-		local displayName = lower(context.LOCAL_PLAYER.DisplayName)
 		if object:IsA("ObjectValue") then
 			return object.Value == context.LOCAL_PLAYER
 		elseif object:IsA("StringValue") then
@@ -484,15 +480,16 @@ return function()
 			return tonumber(object.Value) == context.LOCAL_PLAYER.UserId
 		elseif object:IsA("TextLabel") or object:IsA("TextButton") then
 			local text = lower(object.Text)
-			return text:find(playerName, 1, true) ~= nil or text:find(displayName, 1, true) ~= nil
+			return text:find(lower(context.LOCAL_PLAYER.Name), 1, true) ~= nil
+				or text:find(lower(context.LOCAL_PLAYER.DisplayName), 1, true) ~= nil
 		end
 		return false
 	end
 
 	local function markVerifiedOwners(context, candidates)
-		local candidateByRoot = {}
+		local byRoot = {}
 		for _, candidate in ipairs(candidates) do
-			candidateByRoot[candidate.root] = candidate
+			byRoot[candidate.root] = candidate
 			candidate.ownerVerified = false
 		end
 
@@ -500,7 +497,7 @@ return function()
 			if ownerSignalMatches(context, descendant) then
 				local current = descendant
 				while current and current ~= workspace do
-					local candidate = candidateByRoot[current]
+					local candidate = byRoot[current]
 					if candidate then
 						candidate.ownerVerified = true
 						break
@@ -564,9 +561,9 @@ return function()
 		if not localRoot or not root then
 			return false
 		end
+
 		local bounds = getRootBounds(root)
 		local padding = 35
-
 		if bounds.cframe and bounds.size then
 			local localPosition = bounds.cframe:PointToObjectSpace(localRoot.Position)
 			return math.abs(localPosition.X) <= (bounds.size.X * 0.5) + padding
@@ -582,34 +579,16 @@ return function()
 			and position.Z >= bounds.minZ - padding and position.Z <= bounds.maxZ + padding
 	end
 
-	local function countStrongChildRoots(candidate, candidateByRoot)
-		local count = 0
-		for _, child in ipairs(candidate.root:GetChildren()) do
-			local nested = candidateByRoot[child]
-			if nested and nested.rawScore >= 7 then
-				count = count + 1
-			end
-		end
-		return count
-	end
-
 	local function findTycoonRoots(context)
 		local candidates = {}
 		walkPotentialRoots(workspace, 1, candidates)
 		markVerifiedOwners(context, candidates)
 
-		local candidateByRoot = {}
-		for _, candidate in ipairs(candidates) do
-			candidateByRoot[candidate.root] = candidate
-		end
-
 		for _, candidate in ipairs(candidates) do
 			candidate.inside = localPlayerInsideRoot(context, candidate.root)
-			local nestedPenalty = countStrongChildRoots(candidate, candidateByRoot) * 18
 			candidate.score = candidate.rawScore
 				+ (candidate.ownerVerified and 1000 or 0)
 				+ (candidate.inside and 45 or 0)
-				- nestedPenalty
 		end
 
 		table.sort(candidates, function(a, b)
@@ -621,78 +600,114 @@ return function()
 		return candidates
 	end
 
-	local function qualifyPurchaseObject(object)
-		if not object or not object.Parent or not hasExplicitPrice(object) or not hasActivation(object) then
-			return false
+	local function makeButtonEntry(data, context, candidate, price)
+		local touchPart, prompt, clickDetector = getInteraction(candidate)
+		if not touchPart and not prompt and not clickDetector then
+			return nil
 		end
-		if isBlockedInteraction(object) then
-			return false
-		end
-		return extractPrice(object) ~= nil
+
+		local cash = tonumber(context.getCash()) or 0
+		return {
+			object = candidate,
+			part = getReferencePart(candidate),
+			touchPart = touchPart,
+			prompt = prompt,
+			clickDetector = clickDetector,
+			price = price,
+			affordable = price <= cash,
+			locked = price > cash,
+			paidPurchase = false,
+			ownerMatch = data.ownerMatch,
+			ownerVerified = data.ownerVerified,
+			automationAllowed = data.automationAllowed,
+			root = data.root,
+			name = candidate.Name,
+		}
 	end
 
-	local function findNestedPurchaseObject(containerChild)
-		if qualifyPurchaseObject(containerChild) then
-			return containerChild
+	local function registerPurchase(data, context, candidate, seenButtons)
+		if not candidate or not candidate.Parent or seenButtons[candidate] then
+			return false
 		end
-		for _, descendant in ipairs(containerChild:GetDescendants()) do
-			if (descendant:IsA("Model") or descendant:IsA("BasePart")) and qualifyPurchaseObject(descendant) then
-				return descendant
+		if hasAncestorNamed(candidate, data.root, { "purchasedobjects", "purchased" }) then
+			return false
+		end
+		if isBlockedInteraction(candidate) or not hasActivation(candidate) then
+			return false
+		end
+
+		local price = extractPrice(candidate)
+		if price == nil then
+			return false
+		end
+
+		local entry = makeButtonEntry(data, context, candidate, price)
+		if not entry then
+			return false
+		end
+
+		seenButtons[candidate] = true
+		table.insert(data.buttons, entry)
+		return true
+	end
+
+	local function scanPurchaseContainers(root, data, context, seenButtons)
+		for _, container in ipairs(getPurchaseContainers(root)) do
+			if #data.buttons >= context.CONFIG.maxButtons then
+				return
 			end
+			if container and container.Parent then
+				for _, child in ipairs(container:GetChildren()) do
+					if #data.buttons >= context.CONFIG.maxButtons then
+						return
+					end
+					registerPurchase(data, context, child, seenButtons)
+				end
+			end
+		end
+	end
+
+	local function interactionObject(interaction, root)
+		local current = interaction.Parent
+		local depth = 0
+		while current and current ~= root and current ~= workspace and depth < MAX_INTERACTION_PARENT_DEPTH do
+			if (current:IsA("Model") or current:IsA("BasePart")) and extractPrice(current) ~= nil then
+				return current
+			end
+			current = current.Parent
+			depth = depth + 1
 		end
 		return nil
 	end
 
-	local function getCash(context)
-		return tonumber(context.getCash()) or 0
-	end
+	local function scanInteractionFallback(root, data, context, seenButtons)
+		for _, descendant in ipairs(root:GetDescendants()) do
+			if #data.buttons >= context.CONFIG.maxButtons then
+				return
+			end
 
-	local function collectCandidates(root, data, context)
-		local cash = getCash(context)
-		local seenButtons = {}
-		local seenDrops = {}
-
-		for _, container in ipairs(getPurchaseContainers(root)) do
-			if container and container.Parent then
-				for _, child in ipairs(container:GetChildren()) do
-					if #data.buttons >= context.CONFIG.maxButtons then
-						break
-					end
-					local candidate = findNestedPurchaseObject(child)
-					if candidate and not seenButtons[candidate] and not hasAncestorNamed(candidate, root, { "purchasedobjects", "purchased" }) then
-						seenButtons[candidate] = true
-						local price = extractPrice(candidate)
-						local touchPart, prompt, clickDetector = getInteraction(candidate)
-						if price and (touchPart or prompt or clickDetector) then
-							table.insert(data.buttons, {
-								object = candidate,
-								part = getReferencePart(candidate),
-								touchPart = touchPart,
-								prompt = prompt,
-								clickDetector = clickDetector,
-								price = price,
-								affordable = price <= cash,
-								locked = price > cash,
-								paidPurchase = false,
-								ownerMatch = data.ownerMatch,
-								ownerVerified = data.ownerVerified,
-								automationAllowed = data.automationAllowed,
-								root = data.root,
-								name = candidate.Name,
-							})
-						end
-					elseif child and child.Parent and isBlockedInteraction(child) then
-						data.paidSkipped = data.paidSkipped + 1
-					end
+			local isInteraction = descendant:IsA("TouchTransmitter")
+				or descendant:IsA("ProximityPrompt")
+				or descendant:IsA("ClickDetector")
+			if isInteraction then
+				local candidate = interactionObject(descendant, root)
+				if candidate then
+					registerPurchase(data, context, candidate, seenButtons)
 				end
 			end
 		end
+	end
 
+	local function scanCollectors(root, data, context)
+		local seenDrops = {}
 		for _, candidate in ipairs(getCollectorCandidates(root)) do
 			if #data.drops >= context.CONFIG.maxDrops then
-				break
+				return
 			end
-			if candidate.Parent and not seenDrops[candidate] and not isBlockedInteraction(candidate) and not hasAncestorNamed(candidate, root, PURCHASE_CONTAINER_WORDS) then
+			if candidate.Parent
+				and not seenDrops[candidate]
+				and not isBlockedInteraction(candidate)
+				and not hasAncestorNamed(candidate, root, PURCHASE_CONTAINER_WORDS) then
 				local touchPart, prompt, clickDetector = getInteraction(candidate)
 				if touchPart or prompt or clickDetector then
 					seenDrops[candidate] = true
@@ -713,6 +728,13 @@ return function()
 		end
 	end
 
+	local function collectCandidates(root, data, context)
+		local seenButtons = {}
+		scanPurchaseContainers(root, data, context, seenButtons)
+		scanInteractionFallback(root, data, context, seenButtons)
+		scanCollectors(root, data, context)
+	end
+
 	local function scan(context)
 		local roots = findTycoonRoots(context)
 		local selected = roots[1]
@@ -731,7 +753,7 @@ return function()
 			automationAllowed = automationAllowed,
 			buttons = {},
 			drops = {},
-			cash = getCash(context),
+			cash = tonumber(context.getCash()) or 0,
 			owned = ownerVerified,
 			maxLabels = context.CONFIG.maxLabels or 16,
 			paidSkipped = 0,
