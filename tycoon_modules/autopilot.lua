@@ -4,9 +4,9 @@ return function(context)
 
 	local REBIRTH_WORDS = { "rebirth", "prestige", "ascend", "restart tycoon", "reset tycoon" }
 	local BLOCKED_WORDS = { "robux", "gamepass", "game pass", "premium", "developer product", "watch ad", "video ad", "rewarded ad" }
-	local STREAM_REQUEST_INTERVAL = 4
+	local STREAM_REQUEST_INTERVAL = 6
 	local STREAM_DISTANCE = 85
-	local STREAM_TIMEOUT = 1.5
+	local STREAM_TIMEOUT = 1.25
 
 	local state = {
 		startedAt = nil,
@@ -86,9 +86,10 @@ return function(context)
 
 	local function affordableCount(data)
 		local count = 0
+		local now = os.clock()
 		for _, button in ipairs(data and data.buttons or {}) do
 			if button.affordable and not button.paidPurchase
-				and not (button.blockedUntil and button.blockedUntil > os.clock()) then
+				and not (button.blockedUntil and button.blockedUntil > now) then
 				count = count + 1
 			end
 		end
@@ -97,38 +98,37 @@ return function(context)
 
 	local function getBuyInterval(data, brainStatus)
 		local affordable = affordableCount(data)
-		if affordable == 0 then return 0.65 end
-
+		if affordable == 0 then return 0.7 end
 		local strategy = (brainStatus and brainStatus.strategy) or CONFIG.strategy or "Fastest"
 		local bottleneck = brainStatus and brainStatus.bottleneck
-		if bottleneck == "interaction failures" then return 0.55 end
+		if bottleneck == "interaction failures" then return 0.6 end
 
 		if strategy == "Rebirth" then
-			if affordable >= 5 then return 0.09 end
-			if affordable >= 2 then return 0.13 end
-			return 0.2
-		elseif strategy == "Income" then
-			if affordable >= 5 then return 0.11 end
+			if affordable >= 5 then return 0.12 end
 			if affordable >= 2 then return 0.16 end
-			return 0.24
+			return 0.23
+		elseif strategy == "Income" then
+			if affordable >= 5 then return 0.13 end
+			if affordable >= 2 then return 0.18 end
+			return 0.26
 		end
 
-		if affordable >= 6 then return 0.09 end
-		if affordable >= 3 then return 0.14 end
-		return 0.22
+		if affordable >= 6 then return 0.12 end
+		if affordable >= 3 then return 0.17 end
+		return 0.24
 	end
 
 	local function getCollectInterval(data, brainStatus)
 		keepTycoonStreamed(data)
 		local drops = #(data and data.drops or {})
-		if drops == 0 then return 1 end
+		if drops == 0 then return 1.2 end
 		local bottleneck = brainStatus and brainStatus.bottleneck
 		if bottleneck == "waiting for collector" or bottleneck == "waiting for cash" then
-			return drops >= 6 and 0.12 or 0.18
+			return drops >= 6 and 0.35 or 0.42
 		end
-		if drops >= 15 then return 0.2 end
-		if drops >= 5 then return 0.3 end
-		return 0.48
+		if drops >= 15 then return 0.4 end
+		if drops >= 5 then return 0.48 end
+		return 0.62
 	end
 
 	local function resetRunClock()
