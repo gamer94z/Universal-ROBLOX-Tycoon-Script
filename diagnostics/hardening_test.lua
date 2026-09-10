@@ -52,6 +52,24 @@ if not patch(oldCash,newCash,1) then return end
 if not patch('if type%(readfile%) == "function" then\n\t\tfor _, path in ipairs%(%{',
     'if SHARED_ENV.__VYRS_TYCOON_USE_LOCAL_MODULES == true and type(readfile) == "function" then\n\t\tfor _, path in ipairs({',1) then return end
 
+-- The structural scanner used to require repeated button-family evidence for
+-- non-zero purchases. That rejects tycoons which expose only one next purchase
+-- at a time. In a verified owned plot, accept a tightly-local priced interaction
+-- as a purchase candidate while retaining the scanner's premium/ad filters.
+local scannerCompat=[[if name == "scanner" and source then
+        local patchedScanner, scannerPatchCount = source:gsub(
+            "if familySize>=2 or hinted or r%%.price==0 then",
+            "if familySize>=2 or hinted or r.price==0 or (verified and (r.depth or 99)<=2) then"
+        )
+        if scannerPatchCount == 1 then
+            source = patchedScanner
+        else
+            warn("[0xVyrs Tycoon Test] scanner isolated-purchase patch mismatch: " .. tostring(scannerPatchCount))
+        end
+    end
+    if not source then return nil end]]
+if not patch('if not source then return nil end',scannerCompat,1) then return end
+
 if not patch('local EVENT_SCAN_DEBOUNCE = 0%.16','local EVENT_SCAN_DEBOUNCE = 0.35',1) then return end
 if not patch('local EVENT_SCAN_MIN_INTERVAL = 0%.38','local EVENT_SCAN_MIN_INTERVAL = 1.25',1) then return end
 if not patch('\tuiInterval = 0%.5,','\tuiInterval = 0.8,',1) then return end
@@ -116,5 +134,5 @@ if task and task.spawn then
     end)
 end
 
-print("[0xVyrs Tycoon Test] deep hardening active // strict local-player currency // purchase compatibility")
+print("[0xVyrs Tycoon Test] deep hardening active // strict local-player currency // isolated-purchase compatibility")
 return chunk()
