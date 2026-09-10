@@ -18,6 +18,9 @@ return function(context)
 	}
 
 	local cooldowns = setmetatable({}, { __mode = "k" })
+	local cachedCandidates = {}
+	local cachedRoot
+	local lastDiscovery = -math.huge
 	local lastSweep = 0
 	local lastActivated
 	local activated = 0
@@ -136,30 +139,42 @@ return function(context)
 		end
 	end
 
+	local function discover(data)
+		local root = data and data.ownerVerified and data.root ~= workspace and data.root or nil
+		local now = os.clock()
+		if root == cachedRoot and now - lastDiscovery < 12 then return end
+		cachedRoot = root
+		lastDiscovery = now
+
+		local found = {}
+		local seen = {}
+		gatherFrom(LOCAL_PLAYER:FindFirstChildOfClass("PlayerGui"), found, seen, 450)
+		if root then gatherFrom(root, found, seen, 500) end
+		cachedCandidates = found
+	end
+
 	local function sweep(data)
 		local now = os.clock()
 		if now - lastSweep < 2.5 then return 0 end
 		lastSweep = now
-
-		local candidates = {}
-		local seen = {}
-		local playerGui = LOCAL_PLAYER:FindFirstChildOfClass("PlayerGui")
-		gatherFrom(playerGui, candidates, seen, 450)
-		if data and data.ownerVerified and data.root and data.root ~= workspace then
-			gatherFrom(data.root, candidates, seen, 500)
-		end
+		discover(data)
 
 		local count = 0
-		for _, candidate in ipairs(candidates) do
-			local cooldownUntil = cooldowns[candidate] or 0
-			if now >= cooldownUntil then
-				cooldowns[candidate] = now + 25
-				if activate(candidate) then
-					count = count + 1
-					activated = activated + 1
-					lastActivated = localContextText(candidate)
-				else
-					skipped = skipped + 1
+		for index = #cachedCandidates, 1, -1 do
+			local candidate = cachedCandidates[index]
+			if not candidate or not candidate.Parent then
+				table.remove(cachedCandidates, index)
+			else
+				local cooldownUntil = cooldowns[candidate] or 0
+				if now >= cooldownUntil and isSafeFreeCandidate(candidate) then
+					cooldowns[candidate] = now + 25
+					if activate(candidate) then
+						count = count + 1
+						activated = activated + 1
+						lastActivated = localContextText(candidate)
+					else
+						skipped = skipped + 1
+					end
 				end
 			end
 			if count >= 3 then break end
@@ -167,17 +182,25 @@ return function(context)
 		return count
 	end
 
+	local function invalidate()
+		cachedRoot = nil
+		lastDiscovery = -math.huge
+		cachedCandidates = {}
+	end
+
 	local function getStatus()
 		return {
 			activated = activated,
 			skipped = skipped,
 			lastActivated = lastActivated,
+			candidateCount = #cachedCandidates,
 			lastSweep = lastSweep,
 		}
 	end
 
 	return {
 		sweep = sweep,
+		invalidate = invalidate,
 		getStatus = getStatus,
 	}
 end
