@@ -3,6 +3,7 @@ return function(context)
 	local highlights = {}
 	local labels = {}
 	local waypointGui
+	local guiHost = context and context.LOCAL_PLAYER and context.LOCAL_PLAYER:FindFirstChildOfClass("PlayerGui")
 
 	-- Same visual language as 0xVyrs ESP Console.exe.
 	local THEME = {
@@ -81,7 +82,7 @@ return function(context)
 	end
 
 	local function hideWaypoint()
-		if waypointGui then waypointGui.Enabled = false end
+		if waypointGui then waypointGui.Enabled = false waypointGui.Adornee = nil end
 	end
 
 	local function destroy()
@@ -221,7 +222,7 @@ return function(context)
 		state.Size = UDim2.new(0.45, -7, 0, 16)
 
 		gui.Adornee = button.part
-		gui.Parent = button.part
+		gui.Parent = guiHost or button.part
 		return gui
 	end
 
@@ -258,10 +259,9 @@ return function(context)
 				shown = shown + 1
 				seen[object] = true
 				local gui = labels[object]
-				if not gui then gui = makeLabel(button) labels[object] = gui end
+				if not gui or not gui.Parent then gui = makeLabel(button) labels[object] = gui end
 				gui.Enabled = true
 				gui.Adornee = button.part
-				gui.Parent = button.part
 				updateLabel(gui, button)
 			end
 		end
@@ -324,6 +324,7 @@ return function(context)
 		point.Position = UDim2.new(0.5, 0, 0, 65)
 		point.Size = UDim2.new(0, 5, 0, 3)
 		point.Parent = gui
+		gui.Parent = guiHost
 		return gui
 	end
 
@@ -333,9 +334,9 @@ return function(context)
 			hideWaypoint()
 			return
 		end
-		if not waypointGui then waypointGui = createWaypoint() end
+		if not waypointGui or not waypointGui.Parent then waypointGui = createWaypoint() end
+		if not waypointGui then return end
 		waypointGui.Adornee = entry.part
-		waypointGui.Parent = entry.part
 		waypointGui.Enabled = true
 
 		local panel = waypointGui:FindFirstChild("Panel")
