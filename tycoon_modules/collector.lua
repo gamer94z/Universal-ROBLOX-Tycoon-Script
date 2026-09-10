@@ -87,7 +87,6 @@ return function()
 			return false
 		end
 
-		-- Explicit interaction objects are more reliable than touching arbitrary parts.
 		if firePrompt(entry.prompt) then
 			return true
 		end
@@ -102,7 +101,7 @@ return function()
 	end
 
 	local function collectNearby(context, data)
-		if not data or not data.drops or not data.ownerMatch then
+		if not data or not data.drops or data.automationAllowed ~= true then
 			return 0
 		end
 
@@ -134,7 +133,7 @@ return function()
 	end
 
 	local function buyButton(context, button)
-		if not button or button.paidPurchase or not button.ownerVerified then
+		if not button or button.paidPurchase or button.automationAllowed ~= true then
 			return false
 		end
 		local root = context.getLocalRoot()
