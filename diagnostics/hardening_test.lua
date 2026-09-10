@@ -8,17 +8,13 @@ local env = (type(getgenv) == "function" and getgenv())
 	or _G
 
 local STABLE_RUNTIME_COMMIT = "8c2e708a6faf50bc3bc7e7f038df2585d95ddc49"
-local HARDENING_MODULE_COMMIT = "0354ba4cc688a08552ba07bf2875f514fadb9b75"
+local HARDENING_MODULE_COMMIT = "8f309c898b0ed3204b40c92239db59796bd8b092"
 local repoBase = "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/"
 
 env.__VYRS_TYCOON_MODULE_BASE_URL = repoBase .. HARDENING_MODULE_COMMIT .. "/tycoon_modules"
 
 local source = game:HttpGet(repoBase .. STABLE_RUNTIME_COMMIT .. "/autonomous.lua")
 
--- scanner.lua replaces context.getCash with the adaptive resolver during module
--- initialisation. The stable v1.0.0 runtime still had three direct references
--- to its original leaderstats-only getCash(), which caused the corrected value
--- to be overwritten back to 0. Patch only those runtime call sites.
 local replacements = 0
 local function patch(pattern, replacement)
 	local count
@@ -43,5 +39,5 @@ if type(chunk) ~= "function" then
 	return
 end
 
-print("[0xVyrs Tycoon Test] stable runtime compiled // local-player cash row resolver active")
+print("[0xVyrs Tycoon Test] stable runtime compiled // player-list row cash binding active")
 return chunk()
