@@ -1,17 +1,23 @@
--- 0xVyrs universal tycoon scanner v4.2
--- Readiness gate over the audited v4.1 scanner core.
--- Future/inactive purchase objects are discovered but excluded from Auto Buy.
+-- 0xVyrs universal tycoon scanner v4.3
+-- Audited v4.1 discovery + readiness filtering + strict paid-purchase quarantine.
 
 return function(context)
     local CONFIG=context.CONFIG or {}
     local base=tostring(CONFIG.moduleBaseUrl or "https://raw.githubusercontent.com/gamer94z/Universal-ROBLOX-Tycoon-Script/main/tycoon_modules"):gsub("/+$","")
-    local source=game:HttpGet(base.."/scanner_core.lua")
-    local chunk,compileError=loadstring(source)
-    assert(type(chunk)=="function","scanner_core compile failed: "..tostring(compileError))
-    local factory=chunk()
-    assert(type(factory)=="function","scanner_core did not return a factory")
-    local core=factory(context)
+
+    local function loadFactory(path,label)
+        local source=game:HttpGet(base.."/"..path)
+        local chunk,compileError=loadstring(source)
+        assert(type(chunk)=="function",label.." compile failed: "..tostring(compileError))
+        local factory=chunk()
+        assert(type(factory)=="function",label.." did not return a factory")
+        return factory
+    end
+
+    local core=loadFactory("scanner_core.lua","scanner_core")(context)
+    local guard=loadFactory("paid_guard.lua","paid_guard")(context)
     assert(type(core)=="table" and type(core.scan)=="function","scanner_core initialisation failed")
+    assert(type(guard)=="table" and type(guard.evidence)=="function","paid_guard initialisation failed")
 
     local READINESS_KEYS={
         active=true,isactive=true,enabled=true,isenabled=true,
@@ -71,8 +77,8 @@ return function(context)
         text=tostring(text or "")
         local lower=text:lower()
         if text:find("$",1,true) or text:find("£",1,true) or text:find("€",1,true) or text:find("¥",1,true) then return true end
-        if lower:find("buy",1,true) or lower:find("purchase",1,true) or lower:find("price",1,true) or lower:find("cost",1,true) then return true end
-        return false
+        return lower:find("buy",1,true)~=nil or lower:find("purchase",1,true)~=nil
+            or lower:find("price",1,true)~=nil or lower:find("cost",1,true)~=nil
     end
 
     local function visiblePurchaseCue(button)
@@ -80,11 +86,9 @@ return function(context)
         if sourceObject and sourceObject.Parent and (sourceObject:IsA("TextLabel") or sourceObject:IsA("TextButton") or sourceObject:IsA("TextBox")) then
             if guiVisible(sourceObject,button.object) and tostring(sourceObject.Text or "")~="" then return true end
         end
-
         if button and button.prompt and button.prompt.Parent and button.prompt.Enabled~=false then
             if tostring(button.prompt.ActionText or "")~="" or tostring(button.prompt.ObjectText or "")~="" then return true end
         end
-
         local origin=button and button.object
         if not origin or not origin.Parent then return false end
         local queue={origin}
@@ -128,7 +132,6 @@ return function(context)
 
     local function readiness(button)
         if not button or not button.object or not button.object.Parent then return false,"missing-object" end
-
         if button.prompt and button.prompt.Parent then
             if button.prompt.Enabled==false then return false,"prompt-disabled" end
             if tonumber(button.prompt.MaxActivationDistance) and button.prompt.MaxActivationDistance<=0 then return false,"prompt-range-zero" end
@@ -158,29 +161,43 @@ return function(context)
         if hostCompletelyHidden(button) and not cue then
             return false,"hidden-host-no-cue"
         end
-
         return true,"ready"
     end
 
     local function filter(data)
         if type(data)~="table" then return data end
         local kept={}
-        local skipped=0
-        local reasons={}
+        local notReady=0
+        local notReadyReasons={}
+        local strictPaid=0
+        local paidReasons={}
+
         for _,button in ipairs(data.buttons or {}) do
-            local ready,reason=readiness(button)
-            button.ready=ready
-            button.readinessReason=reason
-            if ready then
-                table.insert(kept,button)
+            local paidEvidence=guard.evidence(button)
+            if paidEvidence then
+                strictPaid=strictPaid+1
+                paidReasons[paidEvidence]=(paidReasons[paidEvidence] or 0)+1
+                button.paidPurchase=true
+                button.paidEvidence=paidEvidence
             else
-                skipped=skipped+1
-                reasons[reason]=(reasons[reason] or 0)+1
+                local ready,reason=readiness(button)
+                button.ready=ready
+                button.readinessReason=reason
+                if ready then
+                    table.insert(kept,button)
+                else
+                    notReady=notReady+1
+                    notReadyReasons[reason]=(notReadyReasons[reason] or 0)+1
+                end
             end
         end
+
         data.buttons=kept
-        data.notReadyCount=skipped
-        data.notReadyReasons=reasons
+        data.notReadyCount=notReady
+        data.notReadyReasons=notReadyReasons
+        data.strictPaidSkipped=strictPaid
+        data.strictPaidReasons=paidReasons
+        data.paidSkipped=(tonumber(data.paidSkipped) or 0)+strictPaid
 
         local affordable,locked=0,0
         for _,button in ipairs(kept) do
@@ -190,9 +207,11 @@ return function(context)
         data.affordableCount=affordable
         data.lockedCount=locked
         data.debug=data.debug or {}
-        data.debug.moduleVersion="4.2"
-        data.debug.notReadySkipped=skipped
-        data.debug.notReadyReasons=reasons
+        data.debug.moduleVersion="4.3-paid-safe"
+        data.debug.notReadySkipped=notReady
+        data.debug.notReadyReasons=notReadyReasons
+        data.debug.strictPaidSkipped=strictPaid
+        data.debug.strictPaidReasons=paidReasons
         return data
     end
 
@@ -208,6 +227,6 @@ return function(context)
         scan=scan,
         invalidateRoot=invalidateRoot,
         parseCompactNumber=core.parseCompactNumber,
-        moduleVersion="4.2",
+        moduleVersion="4.3-paid-safe",
     }
 end
